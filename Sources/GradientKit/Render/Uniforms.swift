@@ -59,7 +59,7 @@ struct GPUGlobals {
 }
 
 /// The scene flattened into the three buffers the kernel reads.
-struct GPUScene {
+public struct GPUScene {
     var globals: GPUGlobals
     var layers: [GPULayer]
     var stops: [GPUStop]
@@ -77,7 +77,7 @@ struct GPUScene {
         return Array(seen.prefix(GlyphAtlas.maxSlices))
     }
 
-    init(_ w: Wallpaper, width: Int, height: Int, ditherStep: Float) {
+    public init(_ w: Wallpaper, width: Int, height: Int, ditherStep: Float) {
         let glyphs = GPUScene.glyphList(for: w)
         func slices(for text: String) -> (Int32, Int32) {
             let mine = text.glyphs.compactMap { g in glyphs.firstIndex(of: g) }

@@ -13,6 +13,11 @@ import Foundation
 import CoreGraphics
 import CoreText
 import Metal
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 struct GlyphBitmap: Sendable {
     let size: Int
@@ -22,10 +27,128 @@ struct GlyphBitmap: Sendable {
     let sdf: [Float]
 }
 
-enum GlyphRasterizer {
-    /// Render `text` centred in a `size`×`size` bitmap, scaled so its ink
-    /// fits `fill` of the box, and compute its signed distance field.
-    static func render(_ text: String, size: Int = 512, fill: Double = 0.82) -> GlyphBitmap {
+public enum GlyphRasterizer {
+    /// Folders searched for `file:` shapes given by bare name (the app's
+    /// Shapes library, for instance). Absolute paths bypass the search.
+    nonisolated(unsafe) public static var shapeSearchPaths: [URL] = []
+
+    /// A glyph token: `sf:heart.fill` is an SF Symbol, `file:stars.svg` an
+    /// image (SVG, PDF, PNG…) resolved against `shapeSearchPaths`, anything
+    /// else is drawn as text (an emoji, a letter, a word).
+    public enum Source: Equatable, Sendable {
+        case text(String)
+        case symbol(String)
+        case file(String)
+
+        public init(_ token: String) {
+            if token.hasPrefix("sf:") { self = .symbol(String(token.dropFirst(3))) }
+            else if token.hasPrefix("file:") { self = .file(String(token.dropFirst(5))) }
+            else { self = .text(token) }
+        }
+
+        public var token: String {
+            switch self {
+            case let .text(t): t
+            case let .symbol(n): "sf:" + n
+            case let .file(f): "file:" + f
+            }
+        }
+    }
+
+    /// Render a glyph token centred in a `size`×`size` bitmap, scaled so its
+    /// ink fits `fill` of the box, and compute its signed distance field.
+    static func render(_ token: String, size: Int = 512, fill: Double = 0.82) -> GlyphBitmap {
+        switch Source(token) {
+        case let .text(t): return renderText(t, size: size, fill: fill)
+        case let .symbol(name): return renderImage(symbolImage(named: name), size: size, fill: fill)
+        case let .file(path): return renderImage(fileImage(path), size: size, fill: fill)
+        }
+    }
+
+    // MARK: Symbols & files
+
+    static func resolve(_ path: String) -> URL? {
+        if path.hasPrefix("/") || path.hasPrefix("~") {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+        for dir in shapeSearchPaths {
+            let url = dir.appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    static func symbolImage(named name: String) -> CGImage? {
+        #if canImport(AppKit)
+        let config = NSImage.SymbolConfiguration(pointSize: 600, weight: .regular)
+            .applying(NSImage.SymbolConfiguration.preferringMulticolor())
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config) else { return nil }
+        var rect = CGRect(origin: .zero, size: image.size)
+        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+        #elseif canImport(UIKit)
+        let config = UIImage.SymbolConfiguration(pointSize: 600, weight: .regular).applying(UIImage.SymbolConfiguration.preferringMulticolor())
+        return UIImage(systemName: name, withConfiguration: config)?.cgImage
+        #else
+        return nil
+        #endif
+    }
+
+    static func fileImage(_ path: String) -> CGImage? {
+        guard let url = resolve(path) else { return nil }
+        #if canImport(AppKit)
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        // Ask for a large representation so vector files (SVG, PDF) rasterise crisply.
+        var rect = CGRect(origin: .zero, size: CGSize(width: 1200, height: 1200))
+        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+        #elseif canImport(UIKit)
+        return UIImage(contentsOfFile: url.path)?.cgImage
+        #else
+        return nil
+        #endif
+    }
+
+    /// Draw any image as a glyph: its alpha is the ink (opaque images use
+    /// darkness instead), its colours are kept for `glyphColor`.
+    static func renderImage(_ image: CGImage?, size: Int, fill: Double) -> GlyphBitmap {
+        let n = size
+        var rgba = [UInt8](repeating: 0, count: n * n * 4)
+        guard let image else { return GlyphBitmap(size: n, rgba: rgba, sdf: [Float](repeating: 1, count: n * n)) }
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        rgba.withUnsafeMutableBytes { buf in
+            guard let ctx = CGContext(data: buf.baseAddress, width: n, height: n, bitsPerComponent: 8, bytesPerRow: n * 4,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+            ctx.interpolationQuality = .high
+            let w = CGFloat(image.width), h = CGFloat(image.height)
+            let scale = CGFloat(fill) * CGFloat(n) / max(w, h)
+            let dw = w * scale, dh = h * scale
+            ctx.draw(image, in: CGRect(x: (CGFloat(n) - dw) / 2, y: (CGFloat(n) - dh) / 2, width: dw, height: dh))
+        }
+        let opaque = image.alphaInfo == .none || image.alphaInfo == .noneSkipLast || image.alphaInfo == .noneSkipFirst
+        var flipped = [UInt8](repeating: 0, count: n * n * 4)
+        for y in 0..<n {
+            let src = (n - 1 - y) * n * 4, dst = y * n * 4
+            flipped.replaceSubrange(dst..<(dst + n * 4), with: rgba[src..<(src + n * 4)])
+        }
+        if opaque {
+            // No alpha channel: dark pixels are ink, white is background.
+            for i in 0..<(n * n) {
+                let lum = (Int(flipped[i * 4]) * 299 + Int(flipped[i * 4 + 1]) * 587 + Int(flipped[i * 4 + 2]) * 114) / 1000
+                let a = UInt8(255 - lum)
+                flipped[i * 4 + 3] = a
+                // Premultiply so the ink is the original colour scaled by coverage.
+                flipped[i * 4] = UInt8(Int(flipped[i * 4]) * Int(a) / 255)
+                flipped[i * 4 + 1] = UInt8(Int(flipped[i * 4 + 1]) * Int(a) / 255)
+                flipped[i * 4 + 2] = UInt8(Int(flipped[i * 4 + 2]) * Int(a) / 255)
+            }
+        }
+        let sdf = signedDistance(alpha: flipped, size: n)
+        return GlyphBitmap(size: n, rgba: flipped, sdf: sdf)
+    }
+
+    // MARK: Text
+
+    static func renderText(_ text: String, size: Int, fill: Double) -> GlyphBitmap {
         let n = size
         var rgba = [UInt8](repeating: 0, count: n * n * 4)
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -196,7 +319,16 @@ final class GlyphAtlas: @unchecked Sendable {
 }
 
 public extension String {
-    /// The user-perceived characters (grapheme clusters) — each emoji,
-    /// including multi-scalar ones, is one glyph.
-    var glyphs: [String] { map { String($0) }.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+    /// The glyph tokens in a shape's text: whitespace-separated words that
+    /// carry a `sf:` or `file:` prefix are one glyph each; everything else
+    /// splits into user-perceived characters, so each emoji is one glyph.
+    var glyphs: [String] {
+        var out: [String] = []
+        for word in split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
+            let w = String(word)
+            if w.hasPrefix("sf:") || w.hasPrefix("file:") { out.append(w) }
+            else { out.append(contentsOf: w.map { String($0) }) }
+        }
+        return out
+    }
 }

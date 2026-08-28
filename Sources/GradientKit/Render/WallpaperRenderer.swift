@@ -164,7 +164,7 @@ public final class WallpaperRenderer: @unchecked Sendable {
 
     // MARK: Readback
 
-    static func image(from texture: MTLTexture, bitDepth: BitDepth) throws -> CGImage {
+    public static func image(from texture: MTLTexture, bitDepth: BitDepth) throws -> CGImage {
         let width = texture.width, height = texture.height
         let bytesPerComponent = bitDepth == .eight ? 1 : 2
         let bytesPerPixel = 4 * bytesPerComponent

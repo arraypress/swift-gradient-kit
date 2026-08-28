@@ -43,6 +43,8 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
     case retro
     /// Emoji scattered across a gradient — a fun one for phones.
     case emoji
+    /// An SF Symbol repeated as a texture in the palette's colours.
+    case symbols
     /// Extruded, lit zigzag ridges over a colour sweep.
     case chevron
     /// A field of bevelled tiles with a light sweeping across it.
@@ -64,6 +66,7 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
         case .eclipse, .hill, .halo, .aurora, .topo, .nebula, .prism: .dark
         case .orb, .ribbons, .holo, .chevron, .keycaps, .liquid, .glow, .classic: .dark
         case .horizon, .crescent, .mesh, .ladder, .retro, .emoji: .light
+        case .symbols: .dark
         }
     }
 }
@@ -100,6 +103,7 @@ public struct WallpaperGenerator: Sendable {
         case .ladder: wallpaper = recipe.ladder()
         case .retro: wallpaper = recipe.retro()
         case .emoji: wallpaper = recipe.emoji()
+        case .symbols: wallpaper = recipe.symbols()
         case .chevron: wallpaper = recipe.chevron()
         case .keycaps: wallpaper = recipe.keycaps()
         case .liquid: wallpaper = recipe.liquid()
@@ -1041,6 +1045,62 @@ struct Recipe {
                           effects: effects(vignette: light ? 0 : d(0.1...0.3), warp: chance(0.4) ? d(0.01...0.03) : 0, aberration: 0))
         w.effects.warp.scale = 0.6
         w.effects.grain.intensity = d(0.02...0.05)
+        return w
+    }
+
+    // MARK: Symbols
+
+    static let symbolSets: [String] = [
+        "sf:star.fill", "sf:heart.fill", "sf:bolt.fill", "sf:moon.stars.fill", "sf:leaf.fill", "sf:sparkle",
+        "sf:hexagon.fill", "sf:pawprint.fill", "sf:music.note", "sf:cloud.fill", "sf:drop.fill", "sf:flame.fill",
+        "sf:sun.max.fill", "sf:snowflake", "sf:diamond.fill", "sf:seal.fill", "sf:circle.hexagongrid.fill", "sf:bird.fill",
+        "sf:star.fill sf:sparkle", "sf:heart.fill sf:star.fill", "sf:moon.fill sf:star.fill", "sf:leaf.fill sf:drop.fill",
+    ]
+
+    mutating func symbols() -> Wallpaper {
+        let set = rng.pick(Recipe.symbolSets)
+        let deep = drift(p.deep)
+        let base = drift(p.base)
+        let accent = drift(p.accent)
+        let secondary = drift(p.secondary)
+        let highlight = drift(p.highlight)
+        let background: Background = chance(0.6)
+            ? .linear([deep, base], angle: d(0...360), smoothing: 0.5)
+            : .radial([base, deep], center: [d(0.3...0.7), d(0.3...0.7)], radius: d(0.8...1.3))
+        let size = d(0.07...0.16)
+        let cell = size * d(1.4...2.4)
+        let pattern = Shape.glyphPattern(text: set, center: [0.5, 0.5], cell: [cell, cell * d(0.85...1.15)], size: size, rotation: d(-35...35),
+                                         stagger: chance(0.7) ? 0.5 : 0, jitter: d(0...0.2), rotationJitter: d(0...30), scaleJitter: d(0...0.3))
+        let style = rng.int(in: 0...2)
+        var layers: [Layer] = []
+        switch style {
+        case 0:
+            // Embossed: relief-lit silhouettes a touch lighter than the ground.
+            layers.append(Layer(name: "Symbols", shape: pattern, spread: size * 0.35,
+                                ramp: [RampStop(-1, base.adjusted(lightness: 0.12)), RampStop(0, base.adjusted(lightness: 0.06)), RampStop(0.4, base.with(alpha: 0))],
+                                smoothing: 1,
+                                relief: Relief(height: size * 0.3, profile: .dome, lightAngle: d(-150...(-30)), lightElevation: d(35...60), gloss: d(0.4...0.9), shininess: d(16...48), ambient: 0.4),
+                                glyphColor: 0))
+        case 1:
+            // Neon: thin bright outline with a coloured glow.
+            layers.append(Layer(name: "Glow", shape: pattern, spread: size * 0.5,
+                                ramp: [RampStop(-0.3, accent.with(alpha: 0.5)), RampStop(0, accent.with(alpha: 0.8)), RampStop(1, accent.with(alpha: 0))],
+                                blend: .screen, opacity: d(0.5...0.9), glyphColor: 0))
+            layers.append(Layer(name: "Outline", shape: pattern, spread: size * 0.08,
+                                ramp: [RampStop(-0.6, base.with(alpha: 0)), RampStop(-0.15, highlight), RampStop(0.15, highlight), RampStop(0.6, accent.with(alpha: 0))],
+                                blend: .screen, glyphColor: 0))
+        default:
+            // Flat two-tone with a soft shadow.
+            var shadowShape = pattern
+            shadowShape.anchor = [0.5 + d(0.006...0.015), 0.5 + d(0.008...0.02)]
+            layers.append(Layer(name: "Shadow", shape: shadowShape, spread: size * 0.3,
+                                ramp: [RampStop(-1, deep.with(alpha: 0.6)), RampStop(0, deep.with(alpha: 0.5)), RampStop(1, deep.with(alpha: 0))], glyphColor: 0))
+            layers.append(Layer(name: "Symbols", shape: pattern, spread: size * 0.05,
+                                ramp: [RampStop(-1, accent), RampStop(0, secondary), RampStop(1, secondary.with(alpha: 0))], glyphColor: 0))
+        }
+        var w = Wallpaper(background: background, layers: layers,
+                          effects: effects(vignette: d(0.1...0.35), warp: chance(0.3) ? d(0.005...0.02) : 0, aberration: 0))
+        w.effects.grain.intensity = d(0.03...0.06)
         return w
     }
 }

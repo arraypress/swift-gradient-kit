@@ -66,6 +66,9 @@ lighting, which turns the distance field into a lit height map — extruded
 chevron ridges, bevelled keycap tiles and glossy liquid blobs. A liquify
 brush (`Effects.smears`) pushes, swirls, pinches or bloats the picture like
 wet paint, and because the scene is analytic the strokes export at any size.
+Emoji (or a word) are shapes too: rasterised with CoreText, turned into an
+exact distance field, and tiled with per-cell jitter — so they take drop
+shadows, glows and 3-D relief like everything else (`glyph`, `glyphPattern`).
 
 ## What's in the box
 

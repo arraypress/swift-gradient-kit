@@ -42,6 +42,44 @@ while let a = it.next() {
 
 let renderer = try WallpaperRenderer()
 
+if args.contains("--bench") {
+    // GPU + readback time per motif at a Retina preview size, after warm-up.
+    let w = 2400, h = 1350
+    print(String(format: "%-10@ %8@ %8@   layers  aberr  relief  smears", "motif", "gpu ms", "cg ms"))
+    for motif in Motif.allCases {
+        let scene = Wallpaper.generate(motif, seed: 5, aspect: Double(w) / Double(h))
+        _ = try renderer.renderTexture(scene, width: w, height: h)
+        var gpu = 0.0, cg = 0.0
+        for _ in 0..<5 {
+            let t0 = Date()
+            let tex = try renderer.renderTexture(scene, width: w, height: h)
+            let t1 = Date()
+            _ = try WallpaperRenderer.image(from: tex, bitDepth: .eight)
+            let t2 = Date()
+            gpu += t1.timeIntervalSince(t0); cg += t2.timeIntervalSince(t1)
+        }
+        let relief = scene.layers.filter { $0.relief.isActive }.count
+        print(String(format: "%-10@ %8.2f %8.2f   %2d      %4.1f   %d       %d", motif.rawValue, gpu / 5 * 1000, cg / 5 * 1000,
+                     scene.layers.count, scene.effects.aberration, relief, scene.effects.smears.count))
+    }
+    // Smear scaling: 400 strokes on the liquid scene.
+    var heavy = Wallpaper.generate(.liquid, seed: 5, aspect: Double(w) / Double(h))
+    heavy.effects.smears = (0..<400).map { i in Smear(position: [Double(i % 20) / 20, Double(i / 20) / 20], vector: [0.05, 0.02], radius: 0.2) }
+    _ = try renderer.renderTexture(heavy, width: w, height: h)      // builds the map
+    let t0 = Date()
+    for _ in 0..<5 { _ = try renderer.renderTexture(heavy, width: w, height: h) }
+    print(String(format: "liquid + 400 smears (map cached): %.2f ms", Date().timeIntervalSince(t0) / 5 * 1000))
+    heavy.effects.smears.append(Smear(position: [0.5, 0.5], vector: [0.05, 0.02], radius: 0.2))
+    let t1 = Date()
+    _ = try renderer.renderTexture(heavy, width: w, height: h)
+    print(String(format: "…plus one appended stroke: %.2f ms", Date().timeIntervalSince(t1) * 1000))
+    // CPU-side packing cost.
+    let t2 = Date()
+    for _ in 0..<100 { _ = GPUScene(heavy, width: w, height: h, ditherStep: 1 / 255) }
+    print(String(format: "GPUScene packing: %.3f ms", Date().timeIntervalSince(t2) / 100 * 1000))
+    exit(0)
+}
+
 if !picks.isEmpty {
     // Explicit seeds: one file each, numbered in the order given.
     let start = Date()

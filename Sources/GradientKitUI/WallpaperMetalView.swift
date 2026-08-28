@@ -113,23 +113,50 @@ public struct WallpaperMetalView: PlatformViewRepresentable {
     public final class Coordinator: NSObject, MTKViewDelegate {
         let renderer: WallpaperRenderer? = try? WallpaperRenderer()
         var wallpaper: Wallpaper?
+        /// Frame pacing: at most one frame in flight, never block on a
+        /// drawable. If the scene changes while a frame is rendering, one
+        /// more draw is requested when it completes — the latest scene wins.
+        private var inFlight = 0
+        private var wantsRedraw = false
+        private var lastDrawn: Wallpaper?
+        private var lastDrawnSize: CGSize = .zero
 
         public nonisolated func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
         public nonisolated func draw(in view: MTKView) {
             MainActor.assumeIsolated {
-                guard let renderer, let wallpaper,
-                      let drawable = view.currentDrawable,
+                guard let renderer, let wallpaper else { return }
+                if inFlight > 0 { wantsRedraw = true; return }
+                // Nothing changed since the last frame (e.g. a hover-only update): skip.
+                if lastDrawn == wallpaper, lastDrawnSize == view.drawableSize { return }
+                guard let drawable = view.currentDrawable,
                       drawable.texture.width > 0, drawable.texture.height > 0,
                       let cmd = renderer.commandQueue.makeCommandBuffer()
                 else { return }
                 do {
                     try renderer.encode(wallpaper, into: drawable.texture, commandBuffer: cmd)
-                    cmd.present(drawable)
-                    cmd.commit()
                 } catch {
-                    // A failed encode leaves the previous frame on screen.
+                    return   // a failed encode leaves the previous frame on screen
                 }
+                inFlight += 1
+                lastDrawn = wallpaper
+                lastDrawnSize = view.drawableSize
+                cmd.addCompletedHandler { [weak self, weak view] _ in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.inFlight -= 1
+                        if self.wantsRedraw {
+                            self.wantsRedraw = false
+                            #if canImport(AppKit)
+                            view?.needsDisplay = true
+                            #else
+                            view?.setNeedsDisplay()
+                            #endif
+                        }
+                    }
+                }
+                cmd.present(drawable)
+                cmd.commit()
             }
         }
     }

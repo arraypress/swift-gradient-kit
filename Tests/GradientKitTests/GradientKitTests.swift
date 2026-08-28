@@ -410,3 +410,48 @@ struct GlyphTests {
         _ = try r.render(Wallpaper.generate(.emoji, seed: 4), width: 120, height: 200)
     }
 }
+
+@Suite("Symbols & shape files")
+struct SymbolTests {
+    @Test("Tokens split correctly and an SF Symbol rasterises with ink")
+    func symbols() throws {
+        #expect("sf:star.fill 🍒 file:x.svg ab".glyphs == ["sf:star.fill", "🍒", "file:x.svg", "a", "b"])
+        #expect(GlyphRasterizer.Source("sf:heart.fill") == .symbol("heart.fill"))
+        #expect(GlyphRasterizer.Source("file:a.png").token == "file:a.png")
+        let bmp = GlyphRasterizer.render("sf:star.fill", size: 128)
+        let n = bmp.size
+        let inked = bmp.rgba.enumerated().filter { $0.offset % 4 == 3 && $0.element > 128 }.count
+        #expect(inked > 500)
+        #expect(bmp.sdf[(n / 2) * n + n / 2] < 0 && bmp.sdf[0] > 0)
+        // Unknown symbol → empty glyph, never a crash.
+        let none = GlyphRasterizer.render("sf:no.such.symbol.zzz", size: 32)
+        #expect(none.sdf.allSatisfy { $0 > 0 })
+    }
+
+    @Test("A shape file is found through the search path and renders")
+    func files() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("gk-shapes-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // A black disc on transparent, as PNG.
+        let n = 64
+        let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+        ctx.fillEllipse(in: CGRect(x: 8, y: 8, width: 48, height: 48))
+        let url = dir.appendingPathComponent("disc.png")
+        try ImageExport.write(ctx.makeImage()!, to: url, format: .png)
+        GlyphRasterizer.shapeSearchPaths = [dir]
+        defer { GlyphRasterizer.shapeSearchPaths = [] }
+        let bmp = GlyphRasterizer.render("file:disc.png", size: 96)
+        #expect(bmp.sdf[(96 / 2) * 96 + 96 / 2] < -0.2 && bmp.sdf[0] > 0.2)
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .solid(.black))
+        w.effects.grain = .none
+        w.layers = [Layer(shape: .glyphPattern(text: "file:disc.png sf:star.fill", center: [0.5, 0.5], cell: [0.3, 0.3], size: 0.2, rotation: 0,
+                                               stagger: 0, jitter: 0, rotationJitter: 0, scaleJitter: 0),
+                          spread: 0.01, ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))], glyphColor: 0)]
+        _ = try r.render(w, width: 96, height: 64)
+        _ = try r.render(Wallpaper.generate(.symbols, seed: 2), width: 96, height: 64)
+    }
+}
