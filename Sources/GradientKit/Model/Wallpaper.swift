@@ -232,6 +232,9 @@ public struct Layer: Codable, Sendable, Equatable, Identifiable {
     /// Glyph shapes only: 1 = the emoji's own colours, 0 = a silhouette in
     /// the ramp's colours (for shadows, glows, monochrome patterns).
     public var glyphColor: Double
+    /// Confine the layer to a simple region — stripes inside a sun, a
+    /// texture inside a tile, a ring only where it passes in front.
+    public var clip: Clip?
     public var isEnabled: Bool
 
     public init(id: UUID = UUID(),
@@ -249,12 +252,13 @@ public struct Layer: Codable, Sendable, Equatable, Identifiable {
                 stepped: Bool = false,
                 relief: Relief = Relief(),
                 glyphColor: Double = 1,
+                clip: Clip? = nil,
                 isEnabled: Bool = true) {
         self.id = id; self.name = name; self.shape = shape; self.spread = spread
         self.ramp = ramp; self.blend = blend; self.opacity = opacity
         self.smoothing = smoothing; self.distortion = distortion
         self.lighting = lighting; self.repeatPeriod = repeatPeriod; self.hueSweep = hueSweep
-        self.stepped = stepped; self.relief = relief; self.glyphColor = glyphColor
+        self.stepped = stepped; self.relief = relief; self.glyphColor = glyphColor; self.clip = clip
         self.isEnabled = isEnabled
     }
 
@@ -275,6 +279,7 @@ public struct Layer: Codable, Sendable, Equatable, Identifiable {
         stepped = try c.decodeIfPresent(Bool.self, forKey: .stepped) ?? false
         relief = try c.decodeIfPresent(Relief.self, forKey: .relief) ?? Relief()
         glyphColor = try c.decodeIfPresent(Double.self, forKey: .glyphColor) ?? 1
+        clip = try c.decodeIfPresent(Clip.self, forKey: .clip)
         isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
     }
 
@@ -286,7 +291,36 @@ public struct Layer: Codable, Sendable, Equatable, Identifiable {
             && lhs.smoothing == rhs.smoothing && lhs.distortion == rhs.distortion
             && lhs.lighting == rhs.lighting && lhs.repeatPeriod == rhs.repeatPeriod
             && lhs.hueSweep == rhs.hueSweep && lhs.stepped == rhs.stepped
-            && lhs.relief == rhs.relief && lhs.glyphColor == rhs.glyphColor && lhs.isEnabled == rhs.isEnabled
+            && lhs.relief == rhs.relief && lhs.glyphColor == rhs.glyphColor && lhs.clip == rhs.clip && lhs.isEnabled == rhs.isEnabled
+    }
+}
+
+/// A soft mask the layer is multiplied by. Positions normalised, sizes in
+/// min-side units (`size` is the full width/height of the region).
+public struct Clip: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable, CaseIterable { case circle, rect }
+
+    public var kind: Kind
+    public var center: Vec2
+    public var size: Vec2
+    public var rotation: Double
+    /// Edge softness in min-side units.
+    public var feather: Double
+    /// Keep the outside instead of the inside.
+    public var inverted: Bool
+
+    public init(kind: Kind = .circle, center: Vec2 = [0.5, 0.5], size: Vec2 = [0.5, 0.5], rotation: Double = 0,
+                feather: Double = 0.005, inverted: Bool = false) {
+        self.kind = kind; self.center = center; self.size = size; self.rotation = rotation
+        self.feather = feather; self.inverted = inverted
+    }
+
+    public static func circle(center: Vec2, radius: Double, feather: Double = 0.005, inverted: Bool = false) -> Clip {
+        Clip(kind: .circle, center: center, size: [radius * 2, radius * 2], feather: feather, inverted: inverted)
+    }
+
+    public static func rect(center: Vec2, size: Vec2, rotation: Double = 0, feather: Double = 0.005, inverted: Bool = false) -> Clip {
+        Clip(kind: .rect, center: center, size: size, rotation: rotation, feather: feather, inverted: inverted)
     }
 }
 
@@ -412,6 +446,9 @@ public enum Shape: Codable, Sendable, Equatable {
     /// vary each glyph.
     case glyphPattern(text: String, center: Vec2, cell: Vec2, size: Double, rotation: Double,
                       stagger: Double, jitter: Double, rotationJitter: Double, scaleJitter: Double)
+    /// `count` wedges radiating from `center`, each covering `width` (0…1) of
+    /// its slice; inside a wedge is negative. A sunburst.
+    case rays(center: Vec2, count: Int, rotation: Double, width: Double)
 
     public var kind: Kind {
         switch self {
@@ -431,6 +468,7 @@ public enum Shape: Codable, Sendable, Equatable {
         case .tiles: .tiles
         case .glyph: .glyph
         case .glyphPattern: .glyphPattern
+        case .rays: .rays
         }
     }
 
@@ -445,7 +483,7 @@ public enum Shape: Codable, Sendable, Equatable {
     public var kindName: String { kind.rawValue }
 
     public enum Kind: String, Codable, Sendable, CaseIterable, Identifiable {
-        case circle, ellipse, line, wave, ring, crescent, polygon, rect, capsule, stripes, blob, noise, chevrons, tiles, glyph, glyphPattern
+        case circle, ellipse, line, wave, ring, crescent, polygon, rect, capsule, stripes, blob, noise, chevrons, tiles, glyph, glyphPattern, rays
         public var id: String { rawValue }
         public var displayName: String {
             switch self {
@@ -466,7 +504,7 @@ public enum Shape: Codable, Sendable, Equatable {
             case let .line(p, _, _), let .wave(p, _, _, _, _), let .stripes(p, _, _, _, _), let .chevrons(p, _, _, _, _, _): p
             case let .capsule(a, _, _): a
             case let .noise(o, _, _): o
-            case let .tiles(c, _, _, _, _, _), let .glyph(_, c, _, _), let .glyphPattern(_, c, _, _, _, _, _, _, _): c
+            case let .tiles(c, _, _, _, _, _), let .glyph(_, c, _, _), let .glyphPattern(_, c, _, _, _, _, _, _, _), let .rays(c, _, _, _): c
             }
         }
         set {
@@ -489,6 +527,7 @@ public enum Shape: Codable, Sendable, Equatable {
             case let .glyph(t, _, sz, rot): self = .glyph(text: t, center: newValue, size: sz, rotation: rot)
             case let .glyphPattern(t, _, cell, sz, rot, st, j, rj, sj):
                 self = .glyphPattern(text: t, center: newValue, cell: cell, size: sz, rotation: rot, stagger: st, jitter: j, rotationJitter: rj, scaleJitter: sj)
+            case let .rays(_, n, rot, w): self = .rays(center: newValue, count: n, rotation: rot, width: w)
             }
         }
     }
@@ -504,7 +543,7 @@ public enum Shape: Codable, Sendable, Equatable {
             case let .stripes(_, _, p, _, _), let .chevrons(_, _, p, _, _, _): p
             case let .tiles(_, cell, _, _, _, _): max(cell.x, cell.y)
             case let .glyph(_, _, sz, _), let .glyphPattern(_, _, _, sz, _, _, _, _, _): sz
-            case .line, .wave, .noise: nil
+            case .line, .wave, .noise, .rays: nil
             }
         }
         set {
@@ -534,7 +573,7 @@ public enum Shape: Codable, Sendable, Equatable {
             case let .glyphPattern(t, c, cell, sz, rot, st, j, rj, sj):
                 let k = sz > 0 ? v / sz : 1
                 self = .glyphPattern(text: t, center: c, cell: cell * k, size: v, rotation: rot, stagger: st, jitter: j, rotationJitter: rj, scaleJitter: sj)
-            case .line, .wave, .noise: break
+            case .line, .wave, .noise, .rays: break
             }
         }
     }
@@ -545,7 +584,7 @@ public enum Shape: Codable, Sendable, Equatable {
             switch self {
             case let .ellipse(_, _, rot), let .polygon(_, _, _, rot, _), let .rect(_, _, rot, _), let .blob(_, _, _, _, rot): rot
             case let .line(_, a, _), let .wave(_, a, _, _, _), let .stripes(_, a, _, _, _), let .chevrons(_, a, _, _, _, _): a
-            case let .tiles(_, _, _, _, rot, _), let .glyph(_, _, _, rot), let .glyphPattern(_, _, _, _, rot, _, _, _, _): rot
+            case let .tiles(_, _, _, _, rot, _), let .glyph(_, _, _, rot), let .glyphPattern(_, _, _, _, rot, _, _, _, _), let .rays(_, _, rot, _): rot
             case let .capsule(a, b, _): atan2(b.y - a.y, b.x - a.x) * 180 / .pi
             default: nil
             }
@@ -565,6 +604,7 @@ public enum Shape: Codable, Sendable, Equatable {
             case let .glyph(t, c, sz, _): self = .glyph(text: t, center: c, size: sz, rotation: v)
             case let .glyphPattern(t, c, cell, sz, _, st, j, rj, sj):
                 self = .glyphPattern(text: t, center: c, cell: cell, size: sz, rotation: v, stagger: st, jitter: j, rotationJitter: rj, scaleJitter: sj)
+            case let .rays(c, n, _, w): self = .rays(center: c, count: n, rotation: v, width: w)
             case let .capsule(a, b, r):
                 let len = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
                 let rad = v * .pi / 180
@@ -607,6 +647,8 @@ public enum Shape: Codable, Sendable, Equatable {
             let sz = max(min(r * 0.5, 0.3), 0.04)
             return .glyphPattern(text: glyphText ?? "✨", center: c, cell: [sz * 1.7, sz * 1.7], size: sz, rotation: angle ?? -20,
                                  stagger: 0.5, jitter: 0.15, rotationJitter: 20, scaleJitter: 0.15)
+        case .rays:
+            return .rays(center: c, count: 16, rotation: angle ?? 0, width: 0.5)
         }
     }
 }

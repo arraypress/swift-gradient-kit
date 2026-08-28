@@ -39,6 +39,8 @@ enum ShaderSource {
         float4 p5;   // chevrons: amplitude, wavelength | tiles: inset, cornerRadius, stagger (xyz)
         float4 p6;   // relief: height, profile, lightAz(rad), lightEl(rad)
         float4 p7;   // relief gloss, shininess, ambient, stepped(0/1)
+        float4 p8;   // clip: cx, cy, halfW, halfH
+        float4 p9;   // clip: kind, rotation, feather, inverted
         int kind; int blend; int stopOffset; int stopCount;
     };
 
@@ -72,7 +74,7 @@ enum ShaderSource {
 
     constant int KIND_CIRCLE = 0, KIND_ELLIPSE = 1, KIND_LINE = 2, KIND_RING = 3, KIND_CRESCENT = 4, KIND_WAVE = 5,
                  KIND_POLYGON = 6, KIND_RECT = 7, KIND_CAPSULE = 8, KIND_STRIPES = 9, KIND_BLOB = 10, KIND_NOISE = 11,
-                 KIND_CHEVRONS = 12, KIND_TILES = 13, KIND_GLYPH = 14, KIND_GLYPH_PATTERN = 15;
+                 KIND_CHEVRONS = 12, KIND_TILES = 13, KIND_GLYPH = 14, KIND_GLYPH_PATTERN = 15, KIND_RAYS = 16;
 
     // Everything a glyph lookup needs, passed through the distance functions.
     struct GlyphSampling {
@@ -367,6 +369,14 @@ enum ShaderSource {
                 float m = d - period * floor(d / period + 0.5);
                 return abs(m) - L.p1.w * 0.5;
             }
+            case KIND_RAYS: {
+                float count = max(L.p1.y, 1.0);
+                float period = 6.28318530718 / count;
+                float theta = atan2(rel.y, rel.x) - L.p1.x;
+                float m = theta - period * floor(theta / period + 0.5);        // ±period/2
+                float halfWidth = L.p1.z * period * 0.5;
+                return (abs(m) - halfWidth) * max(length(rel), 1e-4);          // arc distance
+            }
             case KIND_TILES: {
                 float rot = L.p1.x;
                 float cs = cos(rot), sn = sin(rot);
@@ -511,7 +521,23 @@ enum ShaderSource {
                 lab.yz = float2(lab.y * cs - lab.z * sn, lab.y * sn + lab.z * cs);
             }
             float alpha = lab.w * L.p3.y;
-            if (L.p3.w != 0.0 && L.kind != KIND_LINE && L.kind != KIND_WAVE && L.kind != KIND_STRIPES && L.kind != KIND_NOISE) {
+            if (L.p9.x > 0.5) {
+                // Clip: a soft mask from a circle/ellipse or rectangle.
+                float2 cr = rotate2(q - L.p8.xy, L.p9.y);
+                float cd;
+                if (L.p9.x < 1.5) {
+                    float2 rn = cr / L.p8.zw;
+                    float f = length(rn) - 1.0;
+                    float2 grad = rn / L.p8.zw / max(length(rn), 1e-4);
+                    cd = f / max(length(grad), 1e-4);
+                } else {
+                    float2 d2 = abs(cr) - L.p8.zw;
+                    cd = length(max(d2, 0.0)) + min(max(d2.x, d2.y), 0.0);
+                }
+                float inside = 1.0 - smoothstep(-L.p9.z, L.p9.z, cd);
+                alpha *= (L.p9.w > 0.5) ? (1.0 - inside) : inside;
+            }
+            if (L.p3.w != 0.0 && L.kind != KIND_LINE && L.kind != KIND_WAVE && L.kind != KIND_STRIPES && L.kind != KIND_NOISE && L.kind != KIND_RAYS) {
                 // One-sided light: a linear gradient across the shape's own
                 // radius (no singularity at the centre), eased at both ends.
                 float2 dir = float2(cos(L.p3.z), sin(L.p3.z));

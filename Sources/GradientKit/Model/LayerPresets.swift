@@ -79,6 +79,10 @@ public extension Layer {
             // One big emoji with a soft glow behind it.
             return Layer(name: "Emoji", shape: .glyph(text: "✨", center: position, size: 0.5, rotation: -8),
                          spread: 0.12, ramp: [RampStop(-1, highlight), RampStop(0, accent), RampStop(1.2, fadeOut)], glyphColor: 1)
+        case .rays:
+            return Layer(name: "Sunburst", shape: .rays(center: [position.x, position.y + 0.3], count: 18, rotation: 0, width: 0.5),
+                         spread: 0.03, ramp: [RampStop(-1, accent.with(alpha: 0.35)), RampStop(0, accent.with(alpha: 0.25)), RampStop(1, accent.with(alpha: 0))],
+                         blend: .screen, opacity: 0.9)
         case .glyphPattern:
             return Layer(name: "Emoji pattern",
                          shape: .glyphPattern(text: "🍒🍋🫧", center: position, cell: [0.22, 0.22], size: 0.12, rotation: -18,

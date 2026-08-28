@@ -32,6 +32,8 @@ struct GPULayer {
     var p5: SIMD4<Float> = .zero
     var p6: SIMD4<Float> = .zero
     var p7: SIMD4<Float> = .zero
+    var p8: SIMD4<Float> = .zero   // clip: cx, cy, halfW, halfH
+    var p9: SIMD4<Float> = .zero   // clip: kind (0 none, 1 circle/ellipse, 2 rect), rotation, feather, inverted
     var kind: Int32 = 0
     var blend: Int32 = 0
     var stopOffset: Int32 = 0
@@ -227,6 +229,11 @@ public struct GPUScene {
                 L.p0 = SIMD4<Float>(c.x, c.y, 0, 0)
                 L.p1 = SIMD4<Float>(rad(rotation), Float(size), 0, 0)
                 L.p5 = SIMD4<Float>(0, 0, Float(offset), Float(count))
+            case let .rays(center, count, rotation, width):
+                L.kind = 16
+                let c = scene(center)
+                L.p0 = SIMD4<Float>(c.x, c.y, 0, 0)
+                L.p1 = SIMD4<Float>(rad(rotation), Float(max(1, count)), Float(max(0, min(width, 1))), 0)
             case let .glyphPattern(text, center, cell, size, rotation, stagger, jitter, rotationJitter, scaleJitter):
                 L.kind = 15
                 let c = scene(center)
@@ -236,6 +243,11 @@ public struct GPUScene {
                 L.p5 = SIMD4<Float>(rad(rotationJitter), Float(scaleJitter), Float(offset), Float(count))
             }
             L.p2.x = layer.shape.glyphText == nil ? L.p2.x : Float(max(0, min(layer.glyphColor, 1)))
+            if let clip = layer.clip {
+                let cc = scene(clip.center)
+                L.p8 = SIMD4<Float>(cc.x, cc.y, Float(max(clip.size.x, 1e-4) / 2), Float(max(clip.size.y, 1e-4) / 2))
+                L.p9 = SIMD4<Float>(clip.kind == .circle ? 1 : 2, rad(clip.rotation), Float(max(clip.feather, 1e-4)), clip.inverted ? 1 : 0)
+            }
             let r = layer.relief
             let profile: Float = r.profile == .dome ? 0 : (r.profile == .bevel ? 1 : 2)
             L.p6 = SIMD4<Float>(Float(max(0, r.height)), profile, rad(r.lightAngle), rad(max(1, min(r.lightElevation, 89))))

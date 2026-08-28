@@ -71,7 +71,7 @@ struct ModelTests {
     @Test("GPU layouts match the shader's expectations")
     func layouts() {
         #expect(MemoryLayout<GPUStop>.stride == 32)
-        #expect(MemoryLayout<GPULayer>.stride == 144)
+        #expect(MemoryLayout<GPULayer>.stride == 176)
         #expect(MemoryLayout<GPUGlobals>.stride == 192)
     }
 }
@@ -486,5 +486,78 @@ struct EffectOrderTests {
         // Bypassed effects keep their order entry.
         w.effects.bypassed = [.grain]
         #expect(w.effects.resolved.order.count == 6)
+    }
+}
+
+@Suite("Recolour")
+struct RecolorTests {
+    @Test("Recolouring keeps layers, strokes and edits; moves colours to the new palette")
+    func recolor() throws {
+        var w = Wallpaper.generate(.eclipse, palette: .eclipse, seed: 7919)
+        w.effects.smears = [Smear(position: [0.5, 0.5], vector: [0.1, 0], radius: 0.2)]
+        w.layers.append(Layer.starter(.rect, palette: .eclipse))
+        let r = w.recolored(to: .ember)
+        #expect(r.layers.count == w.layers.count && r.effects.smears == w.effects.smears)
+        #expect(r.palette == Palette.ember && r.origin?.paletteName == "Ember")
+        // The stop that was closest to Eclipse's accent (cyan) should now sit near Ember's accent (red).
+        func dist(_ a: RGBA, _ b: RGBA) -> Double {
+            let x = a.oklab, y = b.oklab
+            return (x.l - y.l) * (x.l - y.l) + (x.a - y.a) * (x.a - y.a) + (x.b - y.b) * (x.b - y.b)
+        }
+        let i = w.layers[0].ramp.indices.min { dist(w.layers[0].ramp[$0].color, Palette.eclipse.accent) < dist(w.layers[0].ramp[$1].color, Palette.eclipse.accent) }!
+        let mappedHue = r.layers[0].ramp[i].color.oklch.h
+        let targetHue = Palette.ember.accent.oklch.h
+        let diff = abs(((mappedHue - targetHue) + 540).truncatingRemainder(dividingBy: 360) - 180)
+        #expect(diff < 30)
+        // Greys and alpha survive: a transparent stop stays transparent.
+        #expect(r.layers[0].ramp.last!.color.a == 0)
+        // No palette → unchanged.
+        var bare = Wallpaper(background: .solid(.black)); bare.palette = nil
+        #expect(bare.recolored(to: .ember) == bare)
+        #expect(WallpaperGenerator.autoPalette(for: .eclipse, seed: 7919) == Wallpaper.generate(.eclipse, seed: 7919).palette)
+    }
+}
+
+@Suite("Clip & rays")
+struct ClipTests {
+    private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> Int {
+        let data = image.dataProvider!.data! as Data
+        return Int(data[y * image.bytesPerRow + x * 4])
+    }
+
+    @Test("A clipped layer paints only inside its region; inverted, only outside")
+    func clip() throws {
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .solid(.black))
+        w.effects.grain = .none
+        var white = Layer(shape: .line(through: [0.5, 0.5], angle: 0, bend: 0), spread: 0.001,
+                          ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(0.01, .white)])
+        white.ramp = [RampStop(-100, .white), RampStop(100, .white)]   // paints everywhere
+        white.clip = .circle(center: [0.5, 0.5], radius: 0.2, feather: 0.002)
+        w.layers = [white]
+        var img = try r.render(w, width: 100, height: 100)
+        #expect(pixel(img, 50, 50) > 250 && pixel(img, 5, 5) < 3)
+        w.layers[0].clip?.inverted = true
+        img = try r.render(w, width: 100, height: 100)
+        #expect(pixel(img, 50, 50) < 3 && pixel(img, 5, 5) > 250)
+        w.layers[0].clip = .rect(center: [0.5, 0.5], size: [0.4, 0.2], rotation: 0, feather: 0.002)
+        img = try r.render(w, width: 100, height: 100)
+        #expect(pixel(img, 50, 50) > 250 && pixel(img, 50, 30) < 3 && pixel(img, 65, 50) > 250)
+        let back = try Wallpaper(jsonData: try w.jsonData())
+        #expect(back.layers[0].clip == w.layers[0].clip)
+    }
+
+    @Test("Rays alternate around the centre")
+    func rays() throws {
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .solid(.black))
+        w.effects.grain = .none
+        w.layers = [Layer(shape: .rays(center: [0.5, 0.5], count: 4, rotation: 0, width: 0.5), spread: 0.002,
+                          ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))])]
+        let img = try r.render(w, width: 100, height: 100)
+        // 4 rays of half width: centred on 0°, 90°, 180°, 270°; gaps at 45° etc.
+        #expect(pixel(img, 90, 50) > 250)          // 0°
+        #expect(pixel(img, 80, 20) < 3)            // ~ -56°: in a gap
+        for motif in [Motif.sunset, .saturn, .rays] { _ = try r.render(Wallpaper.generate(motif, seed: 3), width: 96, height: 54) }
     }
 }
