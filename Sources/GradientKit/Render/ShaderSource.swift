@@ -53,7 +53,22 @@ enum ShaderSource {
         float4 tone;             // exposure, contrast, saturation, hueShift(rad)
         float4 misc;             // aberration px, ditherStep, smearCount, 0
         float4 bgMesh;           // columns, rows, stepped, aaWidth(t units)
+        float4 orderA;           // effect order, kinds 0…5 (see Uniforms.swift)
+        float4 orderB;
     };
+
+    constant int FX_LIQUIFY = 0, FX_WARP = 1, FX_ABERRATION = 2, FX_TONE = 3, FX_VIGNETTE = 4, FX_GRAIN = 5;
+
+    inline int effectAt(constant Globals& g, int i) {
+        switch (i) {
+            case 0: return int(g.orderA.x);
+            case 1: return int(g.orderA.y);
+            case 2: return int(g.orderA.z);
+            case 3: return int(g.orderA.w);
+            case 4: return int(g.orderB.x);
+            default: return int(g.orderB.y);
+        }
+    }
 
     constant int KIND_CIRCLE = 0, KIND_ELLIPSE = 1, KIND_LINE = 2, KIND_RING = 3, KIND_CRESCENT = 4, KIND_WAVE = 5,
                  KIND_POLYGON = 6, KIND_RECT = 7, KIND_CAPSULE = 8, KIND_STRIPES = 9, KIND_BLOB = 10, KIND_NOISE = 11,
@@ -173,6 +188,12 @@ enum ShaderSource {
         float3 lo = c * 12.92;
         float3 hi = 1.055 * pow(c, 1.0 / 2.4) - 0.055;
         return select(hi, lo, c <= 0.0031308);
+    }
+
+    inline float3 decodeSRGB(float3 v) {
+        float3 lo = v / 12.92;
+        float3 hi = pow((v + 0.055) / 1.055, 2.4);
+        return select(hi, lo, v <= 0.04045);
     }
 
     // Ramp lookup in OKLab; returns (L, a, b, alpha). `stepped` holds each
@@ -422,16 +443,19 @@ enum ShaderSource {
                  texture2d<float, access::sample> smearMap, sampler samp, GlyphSampling gs) {
         float2 q = (pix - g.size * 0.5) / g.minSide;
 
-        if (g.misc.z > 0.0) {
-            float2 uv = mapUV(pix * g.invSize);
-            q += smearMap.sample(samp, uv).xy;
-        }
-
-        if (g.warp.x > 0.0) {
-            int oct = int(g.warp.z);
-            float2 base = q * g.warp.y + float2(float(g.seed % 977u) * 0.37, float(g.seed % 613u) * 0.53);
-            float2 w = float2(fbm(base, oct), fbm(base + float2(41.3, -17.9), oct));
-            q += w * g.warp.x;
+        // Coordinate effects, in the stack's order. Each one displaces the
+        // point the next samples at, so order changes the picture.
+        for (int i = 0; i < 6; i++) {
+            int fx = effectAt(g, i);
+            if (fx == FX_LIQUIFY && g.misc.z > 0.0) {
+                float2 norm = q * g.minSide * g.invSize + 0.5;
+                q += smearMap.sample(samp, mapUV(norm)).xy;
+            } else if (fx == FX_WARP && g.warp.x > 0.0) {
+                int oct = int(g.warp.z);
+                float2 base = q * g.warp.y + float2(float(g.seed % 977u) * 0.37, float(g.seed % 613u) * 0.53);
+                float2 w = float2(fbm(base, oct), fbm(base + float2(41.3, -17.9), oct));
+                q += w * g.warp.x;
+            }
         }
 
         // Background
@@ -561,54 +585,60 @@ enum ShaderSource {
             col = shade(pix, g, layers, stops, smearMap, glyphSampler, gs);
         }
 
-        // Tone (linear light)
-        col *= exp2(g.tone.x);
-        if (g.tone.z != 1.0) {
-            float lum = dot(col, float3(0.2126, 0.7152, 0.0722));
-            col = mix(float3(lum), col, g.tone.z);
-        }
-        if (g.tone.w != 0.0) {
-            float3 lab = linearToOklab(col);
-            float cs = cos(g.tone.w), sn = sin(g.tone.w);
-            lab.yz = float2(lab.y * cs - lab.z * sn, lab.y * sn + lab.z * cs);
-            col = oklabToLinear(lab);
-        }
-
-        // Vignette
-        if (g.vignette.x > 0.0) {
-            float2 uv = (pix * g.invSize - 0.5) * 2.0;
-            float rr = length(uv) / 1.41421356;
-            float v = smoothstep(g.vignette.y, g.vignette.y + max(g.vignette.z, 1e-3), rr);
-            col *= 1.0 - g.vignette.x * v;
+        // Colour effects, in the stack's order. `col` stays linear; grain
+        // works in gamma space and converts back, so it can sit anywhere.
+        for (int i = 0; i < 6; i++) {
+            int fx = effectAt(g, i);
+            if (fx == FX_TONE) {
+                col *= exp2(g.tone.x);
+                if (g.tone.z != 1.0) {
+                    float lum = dot(col, float3(0.2126, 0.7152, 0.0722));
+                    col = mix(float3(lum), col, g.tone.z);
+                }
+                if (g.tone.w != 0.0) {
+                    float3 lab = linearToOklab(col);
+                    float cs = cos(g.tone.w), sn = sin(g.tone.w);
+                    lab.yz = float2(lab.y * cs - lab.z * sn, lab.y * sn + lab.z * cs);
+                    col = oklabToLinear(lab);
+                }
+                if (g.tone.y != 1.0) {
+                    float3 e = encodeSRGB(col);
+                    e = (e - 0.5) * g.tone.y + 0.5;
+                    col = decodeSRGB(clamp(e, 0.0, 1.0));
+                }
+            } else if (fx == FX_VIGNETTE && g.vignette.x > 0.0) {
+                float2 uv = (pix * g.invSize - 0.5) * 2.0;
+                float rr = length(uv) / 1.41421356;
+                float v = smoothstep(g.vignette.y, g.vignette.y + max(g.vignette.z, 1e-3), rr);
+                col *= 1.0 - g.vignette.x * v;
+            } else if (fx == FX_GRAIN && g.grain.x > 0.0) {
+                float gi = g.grain.x;
+                float3 srgb = encodeSRGB(col);
+                float cell = max(g.grain.y, 1.0);
+                uint s = g.seed;
+                float3 n;
+                if (cell <= 1.0) {
+                    n = float3(hash1(int2(gid), s), hash1(int2(gid), s + 1u), hash1(int2(gid), s + 2u));
+                } else {
+                    // Soft clumps at the cell size plus a touch of per-pixel sparkle.
+                    float fine = 0.35;
+                    float3 coarse = float3(valueNoise(pix, cell, s), valueNoise(pix, cell, s + 1u), valueNoise(pix, cell, s + 2u));
+                    float3 fineN = float3(hash1(int2(gid), s + 3u), hash1(int2(gid), s + 4u), hash1(int2(gid), s + 5u));
+                    n = mix(coarse, fineN, fine);
+                }
+                n = n - 0.5;
+                float mono = n.x;
+                float3 grain = mix(float3(mono), n, g.grain.z) * 2.0 * gi;
+                float lum = dot(srgb, float3(0.299, 0.587, 0.114));
+                float bias = g.grain.w;
+                float weight = 1.0 + bias * (0.5 - lum) * 2.0;   // shadowBias>0 → more in darks
+                srgb += grain * max(weight, 0.0);
+                col = decodeSRGB(clamp(srgb, 0.0, 1.0));
+            }
         }
 
         // Encode
         float3 srgb = encodeSRGB(col);
-        if (g.tone.y != 1.0) srgb = (srgb - 0.5) * g.tone.y + 0.5;
-
-        // Grain (gamma space)
-        float gi = g.grain.x;
-        if (gi > 0.0) {
-            float cell = max(g.grain.y, 1.0);
-            uint s = g.seed;
-            float3 n;
-            if (cell <= 1.0) {
-                n = float3(hash1(int2(gid), s), hash1(int2(gid), s + 1u), hash1(int2(gid), s + 2u));
-            } else {
-                // Soft clumps at the cell size plus a touch of per-pixel sparkle.
-                float fine = 0.35;
-                float3 coarse = float3(valueNoise(pix, cell, s), valueNoise(pix, cell, s + 1u), valueNoise(pix, cell, s + 2u));
-                float3 fineN = float3(hash1(int2(gid), s + 3u), hash1(int2(gid), s + 4u), hash1(int2(gid), s + 5u));
-                n = mix(coarse, fineN, fine);
-            }
-            n = n - 0.5;
-            float mono = n.x;
-            float3 grain = mix(float3(mono), n, g.grain.z) * 2.0 * gi;
-            float lum = dot(srgb, float3(0.299, 0.587, 0.114));
-            float bias = g.grain.w;
-            float weight = 1.0 + bias * (0.5 - lum) * 2.0;   // shadowBias>0 → more in darks
-            srgb += grain * max(weight, 0.0);
-        }
 
         // Triangular dither (±1 LSB)
         float step = g.misc.y;

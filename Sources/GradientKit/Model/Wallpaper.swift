@@ -628,6 +628,13 @@ public struct Effects: Codable, Sendable, Equatable {
     /// Effects switched off without losing their settings — an editor's
     /// "adjustment layer" toggles.
     public var bypassed: Set<Kind>
+    /// The order effects apply in, first to last. Coordinate effects
+    /// (liquify, warp) compose in this order before the scene is sampled;
+    /// colour effects (aberration, tone, vignette, grain) run in this order
+    /// afterwards. Missing kinds are appended in the default order.
+    public var order: [Kind]
+
+    public static let defaultOrder: [Kind] = [.liquify, .warp, .aberration, .tone, .vignette, .grain]
 
     public enum Kind: String, Codable, Sendable, CaseIterable, Identifiable {
         case grain, vignette, warp, aberration, tone, liquify
@@ -645,9 +652,18 @@ public struct Effects: Codable, Sendable, Equatable {
     }
 
     public init(grain: Grain = Grain(), vignette: Vignette = Vignette(), warp: Warp = Warp(),
-                aberration: Double = 0, tone: Tone = Tone(), smears: [Smear] = [], bypassed: Set<Kind> = []) {
+                aberration: Double = 0, tone: Tone = Tone(), smears: [Smear] = [], bypassed: Set<Kind> = [],
+                order: [Kind] = Effects.defaultOrder) {
         self.grain = grain; self.vignette = vignette; self.warp = warp
         self.aberration = aberration; self.tone = tone; self.smears = smears; self.bypassed = bypassed
+        self.order = Effects.normalized(order)
+    }
+
+    /// Every kind exactly once: the given ones first, then the defaults.
+    public static func normalized(_ order: [Kind]) -> [Kind] {
+        var seen: [Kind] = []
+        for k in order + defaultOrder where !seen.contains(k) { seen.append(k) }
+        return seen
     }
 
     public init(from decoder: Decoder) throws {
@@ -659,6 +675,16 @@ public struct Effects: Codable, Sendable, Equatable {
         tone = try c.decodeIfPresent(Tone.self, forKey: .tone) ?? Tone()
         smears = try c.decodeIfPresent([Smear].self, forKey: .smears) ?? []
         bypassed = try c.decodeIfPresent(Set<Kind>.self, forKey: .bypassed) ?? []
+        order = Effects.normalized(try c.decodeIfPresent([Kind].self, forKey: .order) ?? Effects.defaultOrder)
+    }
+
+    /// Move one effect in the stack.
+    public mutating func move(_ kind: Kind, to index: Int) {
+        var o = Effects.normalized(order)
+        guard let i = o.firstIndex(of: kind) else { return }
+        o.remove(at: i)
+        o.insert(kind, at: max(0, min(index, o.count)))
+        order = o
     }
 
     public func isActive(_ kind: Kind) -> Bool { !bypassed.contains(kind) }

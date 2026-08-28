@@ -56,6 +56,9 @@ struct GPUGlobals {
     var tone: SIMD4<Float> = .zero
     var misc: SIMD4<Float> = .zero
     var bgMesh: SIMD4<Float> = .zero
+    /// Effect order as kind indices (liquify 0, warp 1, aberration 2, tone 3, vignette 4, grain 5), 6 used.
+    var orderA: SIMD4<Float> = .zero
+    var orderB: SIMD4<Float> = .zero
 }
 
 /// The scene flattened into the three buffers the kernel reads.
@@ -280,6 +283,18 @@ public struct GPUScene {
         }
         g.misc = SIMD4<Float>(aber, ditherStep, Float(smears.count), 0)
         if smears.isEmpty { smears.append(GPUSmear(posVec: .zero, params: .zero)) }
+        let order = Effects.normalized(e.order).map { kind -> Float in
+            switch kind {
+            case .liquify: 0
+            case .warp: 1
+            case .aberration: 2
+            case .tone: 3
+            case .vignette: 4
+            case .grain: 5
+            }
+        }
+        g.orderA = SIMD4<Float>(order[0], order[1], order[2], order[3])
+        g.orderB = SIMD4<Float>(order[4], order[5], 0, 0)
 
         if stops.isEmpty {
             stops.append(GPUStop(lab: SIMD4<Float>(0, 0, 0, 1), position: 0))

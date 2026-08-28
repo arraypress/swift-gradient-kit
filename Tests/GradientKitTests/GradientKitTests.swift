@@ -72,7 +72,7 @@ struct ModelTests {
     func layouts() {
         #expect(MemoryLayout<GPUStop>.stride == 32)
         #expect(MemoryLayout<GPULayer>.stride == 144)
-        #expect(MemoryLayout<GPUGlobals>.stride == 160)
+        #expect(MemoryLayout<GPUGlobals>.stride == 192)
     }
 }
 
@@ -453,5 +453,38 @@ struct SymbolTests {
                           spread: 0.01, ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))], glyphColor: 0)]
         _ = try r.render(w, width: 96, height: 64)
         _ = try r.render(Wallpaper.generate(.symbols, seed: 2), width: 96, height: 64)
+    }
+}
+
+@Suite("Effect order")
+struct EffectOrderTests {
+    @Test("Order normalises, moves, round-trips, and changes the render")
+    func order() throws {
+        var e = Effects()
+        #expect(e.order == Effects.defaultOrder)
+        e.move(.grain, to: 0)
+        #expect(e.order.first == .grain && e.order.count == 6 && Set(e.order).count == 6)
+        e.order = [.tone, .tone, .liquify]
+        #expect(Effects.normalized(e.order).count == 6)
+        let back = try JSONDecoder().decode(Effects.self, from: JSONEncoder().encode(e))
+        #expect(back.order == Effects.normalized(e.order))
+
+        // Vignette then grain vs grain then vignette: the corner pixels differ.
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .solid(RGBA(r: 0.5, g: 0.5, b: 0.5)))
+        w.effects = Effects(grain: Grain(intensity: 0.2, size: 1, chroma: 0), vignette: Vignette(intensity: 1, radius: 0.1, softness: 0.2))
+        w.effects.order = Effects.normalized([.vignette, .grain])
+        let a = try r.render(w, width: 64, height: 64)
+        w.effects.order = Effects.normalized([.grain, .vignette])
+        let b = try r.render(w, width: 64, height: 64)
+        let da = a.dataProvider!.data! as Data, db = b.dataProvider!.data! as Data
+        // Corner: grain-then-vignette is nearly black; vignette-then-grain keeps grain.
+        // Sum the top row so a single unlucky (negative) grain sample can't hide the difference.
+        var cornerA = 0, cornerB = 0
+        for i in 0..<(64 * 4) { cornerA += Int(da[i]); cornerB += Int(db[i]) }
+        #expect(cornerA > cornerB)
+        // Bypassed effects keep their order entry.
+        w.effects.bypassed = [.grain]
+        #expect(w.effects.resolved.order.count == 6)
     }
 }
