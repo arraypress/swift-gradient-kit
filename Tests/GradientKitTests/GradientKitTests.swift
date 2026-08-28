@@ -188,3 +188,36 @@ struct RendererTests {
         }
     }
 }
+
+@Suite("Renderer edge cases")
+struct RendererEdgeTests {
+    @Test("Extreme effect values never fail a render")
+    func extremes() throws {
+        let r = try WallpaperRenderer()
+        for motif in Motif.allCases {
+            var w = Wallpaper.generate(motif, seed: 11)
+            w.effects.warp = Warp(amount: 0.2, scale: 4, octaves: 6)
+            w.effects.aberration = 6
+            w.effects.grain = Grain(intensity: 0.25, size: 4, chroma: 1, shadowBias: -1)
+            w.effects.vignette = Vignette(intensity: 1, radius: 0, softness: 0.05)
+            w.effects.tone = Tone(exposure: 2, contrast: 1.6, saturation: 2, hueShift: 180)
+            for i in w.layers.indices {
+                w.layers[i].distortion = Distortion(amount: 0.3, scale: 4, octaves: 6)
+                w.layers[i].spread = 0.01
+                w.layers[i].lighting = Lighting(angle: 0, amount: 1)
+            }
+            _ = try r.render(w, width: 320, height: 180)
+            w.effects.warp.octaves = 0          // clamped to 1 on the way to the GPU
+            w.layers = []
+            _ = try r.render(w, width: 7, height: 3)
+        }
+    }
+
+    @Test("Sizes beyond the GPU limit are refused, not attempted")
+    func tooLarge() throws {
+        let r = try WallpaperRenderer()
+        #expect(throws: RenderError.self) {
+            _ = try r.render(Wallpaper(background: .solid(.black)), width: r.maxSide + 1, height: 10)
+        }
+    }
+}
