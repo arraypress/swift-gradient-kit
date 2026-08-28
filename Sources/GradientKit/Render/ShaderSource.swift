@@ -57,7 +57,27 @@ enum ShaderSource {
 
     constant int KIND_CIRCLE = 0, KIND_ELLIPSE = 1, KIND_LINE = 2, KIND_RING = 3, KIND_CRESCENT = 4, KIND_WAVE = 5,
                  KIND_POLYGON = 6, KIND_RECT = 7, KIND_CAPSULE = 8, KIND_STRIPES = 9, KIND_BLOB = 10, KIND_NOISE = 11,
-                 KIND_CHEVRONS = 12, KIND_TILES = 13;
+                 KIND_CHEVRONS = 12, KIND_TILES = 13, KIND_GLYPH = 14, KIND_GLYPH_PATTERN = 15;
+
+    // Everything a glyph lookup needs, passed through the distance functions.
+    struct GlyphSampling {
+        texture2d_array<float, access::sample> color;
+        texture2d_array<float, access::sample> sdf;
+        sampler samp;
+    };
+
+    // Local glyph-box coordinates (±0.5 = the box) → signed distance in scene units.
+    inline float glyphDistance(GlyphSampling g, float2 local, float boxSize, uint slice) {
+        float2 uv = clamp(local + 0.5, 0.0, 1.0);
+        float d = g.sdf.sample(g.samp, uv, slice).r * boxSize;
+        // Beyond the box the field is clamped; add the distance to the box.
+        float2 outside = max(abs(local) - 0.5, 0.0);
+        return d + length(outside) * boxSize;
+    }
+
+    // Rotate + place: returns local box coords and the slice for a pattern cell.
+    inline float2 rotate2(float2 p, float a) { float c = cos(a), s = sin(a); return float2(p.x * c + p.y * s, -p.x * s + p.y * c); }
+
     constant int BG_SOLID = 0, BG_LINEAR = 1, BG_RADIAL = 2, BG_MESH = 3;
 
     inline float floorMod(float x, float y) { return x - y * floor(x / y); }
@@ -197,10 +217,43 @@ enum ShaderSource {
 
     // ---------------------------------------------------------------- shapes
 
-    float layerDistance(constant LayerData& L, float2 q) {
+    // Resolve a glyph layer at q: local box coords, box size, slice.
+    inline void glyphLocate(constant LayerData& L, float2 q, thread float2& local, thread float& box, thread uint& slice) {
+        float2 rel = q - L.p0.xy;
+        if (L.kind == KIND_GLYPH) {
+            box = max(L.p1.y, 1e-4);
+            local = rotate2(rel, L.p1.x) / box;
+            slice = uint(L.p5.z);
+            return;
+        }
+        float2 cell = max(L.p0.zw, 1e-4);
+        float2 p = rotate2(rel, L.p1.x);
+        float row = floor(p.y / cell.y + 0.5);
+        p.x += L.p1.z * cell.x * row;                              // stagger
+        float2 cellIndex = floor(p / cell + 0.5);
+        float2 center = cellIndex * cell;
+        int2 ci = int2(cellIndex);
+        uint seed = uint(L.p4.y) * 7u + 13u;
+        float h1 = hash1(ci, seed), h2 = hash1(ci, seed + 1u), h3 = hash1(ci, seed + 2u), h4 = hash1(ci, seed + 3u), h5 = hash1(ci, seed + 4u);
+        center += (float2(h1, h2) - 0.5) * L.p1.w * cell;          // position jitter
+        float rot = (h3 - 0.5) * 2.0 * L.p5.x;                     // rotation jitter (rad)
+        float scale = 1.0 + (h4 - 0.5) * 2.0 * L.p5.y;             // scale jitter
+        box = max(L.p1.y * scale, 1e-4);
+        local = rotate2(p - center, rot) / box;
+        uint count = max(uint(L.p5.w), 1u);
+        slice = uint(L.p5.z) + uint(floor(h5 * float(count))) % count;
+    }
+
+    float layerDistance(constant LayerData& L, float2 q, GlyphSampling gs) {
         float2 c = L.p0.xy;
         float2 rel = q - c;
         switch (L.kind) {
+            case KIND_GLYPH:
+            case KIND_GLYPH_PATTERN: {
+                float2 local; float box; uint slice;
+                glyphLocate(L, q, local, box, slice);
+                return glyphDistance(gs, local, box, slice);
+            }
             case KIND_CIRCLE:
                 return length(rel) - L.p0.z;
             case KIND_ELLIPSE: {
@@ -311,8 +364,8 @@ enum ShaderSource {
     }
 
     // Distance including the layer's own noise distortion.
-    float layerField(constant LayerData& L, float2 q) {
-        float d = layerDistance(L, q);
+    float layerField(constant LayerData& L, float2 q, GlyphSampling gs) {
+        float d = layerDistance(L, q, gs);
         if (L.p2.y != 0.0) {
             float2 np = q * L.p2.z + float2(L.p4.y * 0.61, L.p4.y * 0.29);
             d += fbm(np, int(L.p2.w)) * L.p2.y;
@@ -334,16 +387,15 @@ enum ShaderSource {
     // ---------------------------------------------------------------- scene
 
     // Liquify: walk strokes newest-first, each displacing the sampling point.
-    float2 applySmears(float2 q, constant Globals& g, constant SmearData* smears) {
-        int n = int(g.misc.z);
+    float2 applySmears(float2 q, int n, constant SmearData* smears) {
         for (int i = 0; i < n; i++) {
             constant SmearData& S = smears[i];
             float2 rel = q - S.posVec.xy;
             float r = max(S.params.x, 1e-4);
+            if (abs(rel.x) >= r || abs(rel.y) >= r) continue;
             float d = length(rel) / r;
             if (d >= 1.0) continue;
-            float w = 1.0 - d * d;
-            w = w * w * S.params.y;                       // smooth bump, zero at the rim
+            float w = pow(1.0 - d * d, max(S.params.w, 0.5)) * S.params.y;   // feathered bump, zero at the rim
             int kind = int(S.params.z);
             if (kind == 0) {                              // push: sample from behind the drag
                 q -= S.posVec.zw * w;
@@ -360,10 +412,20 @@ enum ShaderSource {
         return q;
     }
 
-    float3 shade(float2 pix, constant Globals& g, constant LayerData* layers, constant Stop* stops, constant SmearData* smears) {
+    // The smear map covers normalised canvas coords −0.25…1.25 and stores a
+    // scene-unit displacement, so it is independent of output resolution.
+    constant float MAP_LO = -0.25, MAP_SPAN = 1.5;
+
+    inline float2 mapUV(float2 norm) { return (norm - MAP_LO) / MAP_SPAN; }
+
+    float3 shade(float2 pix, constant Globals& g, constant LayerData* layers, constant Stop* stops,
+                 texture2d<float, access::sample> smearMap, sampler samp, GlyphSampling gs) {
         float2 q = (pix - g.size * 0.5) / g.minSide;
 
-        if (g.misc.z > 0.0) q = applySmears(q, g, smears);
+        if (g.misc.z > 0.0) {
+            float2 uv = mapUV(pix * g.invSize);
+            q += smearMap.sample(samp, uv).xy;
+        }
 
         if (g.warp.x > 0.0) {
             int oct = int(g.warp.z);
@@ -411,7 +473,7 @@ enum ShaderSource {
         // Layers
         for (int i = 0; i < g.layerCount; i++) {
             constant LayerData& L = layers[i];
-            float d = layerField(L, q);
+            float d = layerField(L, q, gs);
             float t = d / max(L.p3.x, 1e-5);
             if (L.p4.z > 0.0) {
                 float period = L.p4.z;
@@ -429,19 +491,34 @@ enum ShaderSource {
                 // One-sided light: a linear gradient across the shape's own
                 // radius (no singularity at the centre), eased at both ends.
                 float2 dir = float2(cos(L.p3.z), sin(L.p3.z));
-                float R = max((L.kind == KIND_ELLIPSE || L.kind == KIND_RECT) ? max(L.p0.z, L.p0.w) : (L.kind == KIND_CAPSULE ? L.p1.x : L.p0.z), 1e-3);
+                float R = max((L.kind == KIND_ELLIPSE || L.kind == KIND_RECT) ? max(L.p0.z, L.p0.w)
+                              : (L.kind == KIND_CAPSULE ? L.p1.x : ((L.kind == KIND_GLYPH || L.kind == KIND_GLYPH_PATTERN) ? L.p1.y * 0.5 : L.p0.z)), 1e-3);
                 float facing = clamp(dot(q - L.p0.xy, dir) / R * 0.5 + 0.5, 0.0, 1.0);
                 facing = smoothstep(0.15, 0.9, facing);
                 alpha *= mix(1.0, facing, L.p3.w);
             }
-            if (alpha <= 0.0) continue;
             float3 src = oklabToLinear(lab.xyz);
+            if ((L.kind == KIND_GLYPH || L.kind == KIND_GLYPH_PATTERN) && L.p2.x > 0.0) {
+                // The emoji's own colours inside its outline, blended by glyphColor.
+                float2 local; float box; uint slice;
+                glyphLocate(L, q, local, box, slice);
+                float2 uv = clamp(local + 0.5, 0.0, 1.0);
+                bool inBox = all(abs(local) <= 0.5);
+                float4 pm = inBox ? gs.color.sample(gs.samp, uv, slice) : float4(0.0);
+                float ga = pm.a;
+                float3 emoji = ga > 1e-4 ? pow(pm.rgb / ga, 2.2) : src;     // un-premultiply, to linear
+                float k = L.p2.x * ga;
+                src = mix(src, emoji, k);
+                // Outside the emoji's own ink, only the ramp's alpha applies; inside, its coverage.
+                alpha = mix(alpha, ga * L.p3.y, L.p2.x * (d < 0.0 ? 1.0 : 0.0));
+            }
+            if (alpha <= 0.0) continue;
             if (L.p6.x > 0.0) {
                 // Relief: slope of the height field → normal → directional light + specular.
                 float eps = 1.5 / g.minSide;
                 float h0 = reliefHeight(L, d);
-                float hx = reliefHeight(L, layerField(L, q + float2(eps, 0.0)));
-                float hy = reliefHeight(L, layerField(L, q + float2(0.0, eps)));
+                float hx = reliefHeight(L, layerField(L, q + float2(eps, 0.0), gs));
+                float hy = reliefHeight(L, layerField(L, q + float2(0.0, eps), gs));
                 float3 nrm = normalize(float3(-(hx - h0) / eps, -(hy - h0) / eps, 1.0));
                 float az = L.p6.z, el = L.p6.w;
                 float3 Ld = float3(cos(az) * cos(el), sin(az) * cos(el), sin(el));
@@ -461,9 +538,14 @@ enum ShaderSource {
                                       constant LayerData* layers [[buffer(1)]],
                                       constant Stop* stops [[buffer(2)]],
                                       constant SmearData* smears [[buffer(3)]],
+                                      texture2d_array<float, access::sample> glyphColor [[texture(1)]],
+                                      texture2d_array<float, access::sample> glyphSDF [[texture(2)]],
+                                      texture2d<float, access::sample> smearMap [[texture(3)]],
+                                      sampler glyphSampler [[sampler(0)]],
                                       uint2 gid [[thread_position_in_grid]]) {
         if (gid.x >= out.get_width() || gid.y >= out.get_height()) return;
         float2 pix = float2(gid) + 0.5;
+        GlyphSampling gs = { glyphColor, glyphSDF, glyphSampler };
 
         float3 col;
         if (g.misc.x > 0.0) {
@@ -472,11 +554,11 @@ enum ShaderSource {
             float r = length(fromCenter / halfSize) / 1.41421356;   // 0 centre … 1 corner
             float2 dir = fromCenter / max(length(fromCenter), 1e-3);
             float2 off = dir * g.misc.x * r * r;
-            col.r = shade(pix + off, g, layers, stops, smears).r;
-            col.g = shade(pix, g, layers, stops, smears).g;
-            col.b = shade(pix - off, g, layers, stops, smears).b;
+            col.r = shade(pix + off, g, layers, stops, smearMap, glyphSampler, gs).r;
+            col.g = shade(pix, g, layers, stops, smearMap, glyphSampler, gs).g;
+            col.b = shade(pix - off, g, layers, stops, smearMap, glyphSampler, gs).b;
         } else {
-            col = shade(pix, g, layers, stops, smears);
+            col = shade(pix, g, layers, stops, smearMap, glyphSampler, gs);
         }
 
         // Tone (linear light)
@@ -537,6 +619,38 @@ enum ShaderSource {
         }
 
         out.write(float4(clamp(srgb, 0.0, 1.0), 1.0), gid);
+    }
+
+    // ------------------------------------------------------------- smear map
+
+    // Rebuild the whole displacement map from the stroke list (newest first).
+    kernel void gradientkit_smear_rebuild(texture2d<float, access::write> map [[texture(0)]],
+                                          constant Globals& g [[buffer(0)]],
+                                          constant SmearData* smears [[buffer(3)]],
+                                          uint2 gid [[thread_position_in_grid]]) {
+        if (gid.x >= map.get_width() || gid.y >= map.get_height()) return;
+        float2 uv = (float2(gid) + 0.5) / float2(map.get_width(), map.get_height());
+        float2 norm = uv * MAP_SPAN + MAP_LO;
+        float2 q = (norm - 0.5) * g.size / g.minSide;
+        float2 q2 = applySmears(q, int(g.misc.z), smears);
+        map.write(float4(q2 - q, 0.0, 0.0), gid);
+    }
+
+    // Compose one new stroke sample onto an existing map: D'(p) = s(p) + D(s(p)) − p.
+    kernel void gradientkit_smear_append(texture2d<float, access::sample> oldMap [[texture(0)]],
+                                         texture2d<float, access::write> newMap [[texture(1)]],
+                                         constant Globals& g [[buffer(0)]],
+                                         constant SmearData* smear [[buffer(3)]],
+                                         sampler samp [[sampler(0)]],
+                                         uint2 gid [[thread_position_in_grid]]) {
+        if (gid.x >= newMap.get_width() || gid.y >= newMap.get_height()) return;
+        float2 uv = (float2(gid) + 0.5) / float2(newMap.get_width(), newMap.get_height());
+        float2 norm = uv * MAP_SPAN + MAP_LO;
+        float2 q = (norm - 0.5) * g.size / g.minSide;
+        float2 q2 = applySmears(q, 1, smear);
+        float2 norm2 = q2 * g.minSide / g.size + 0.5;
+        float2 old = oldMap.sample(samp, mapUV(norm2)).xy;
+        newMap.write(float4(q2 + old - q, 0.0, 0.0), gid);
     }
     """#
 }

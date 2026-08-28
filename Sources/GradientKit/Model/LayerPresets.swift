@@ -75,6 +75,15 @@ public extension Layer {
             return Layer(name: "Keycaps", shape: .tiles(center: position, cell: [0.09, 0.09], inset: 0.006, cornerRadius: 0.016, rotation: -8, stagger: 0.5),
                          spread: 0.03, ramp: [RampStop(-1, base.adjusted(lightness: 0.08)), RampStop(0, base), RampStop(0.15, deep)],
                          relief: Relief(height: 0.02, profile: .bevel, lightAngle: -120, lightElevation: 50, gloss: 0.6, shininess: 40, ambient: 0.35))
+        case .glyph:
+            // One big emoji with a soft glow behind it.
+            return Layer(name: "Emoji", shape: .glyph(text: "✨", center: position, size: 0.5, rotation: -8),
+                         spread: 0.12, ramp: [RampStop(-1, highlight), RampStop(0, accent), RampStop(1.2, fadeOut)], glyphColor: 1)
+        case .glyphPattern:
+            return Layer(name: "Emoji pattern",
+                         shape: .glyphPattern(text: "🍒🍋🫧", center: position, cell: [0.22, 0.22], size: 0.12, rotation: -18,
+                                              stagger: 0.5, jitter: 0.12, rotationJitter: 25, scaleJitter: 0.15),
+                         spread: 0.01, ramp: [RampStop(-1, accent), RampStop(0, accent), RampStop(1, fadeOut)], glyphColor: 1)
         }
     }
 }

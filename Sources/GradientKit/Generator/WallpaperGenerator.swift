@@ -41,8 +41,8 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
     case ladder
     /// Hard diagonal stripes between two flat fields — retro racing stripes.
     case retro
-    /// Rounded swatches of a palette laid out on a card.
-    case swatches
+    /// Emoji scattered across a gradient — a fun one for phones.
+    case emoji
     /// Extruded, lit zigzag ridges over a colour sweep.
     case chevron
     /// A field of bevelled tiles with a light sweeping across it.
@@ -63,7 +63,7 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
         switch self {
         case .eclipse, .hill, .halo, .aurora, .topo, .nebula, .prism: .dark
         case .orb, .ribbons, .holo, .chevron, .keycaps, .liquid, .glow, .classic: .dark
-        case .horizon, .crescent, .mesh, .ladder, .retro, .swatches: .light
+        case .horizon, .crescent, .mesh, .ladder, .retro, .emoji: .light
         }
     }
 }
@@ -99,7 +99,7 @@ public struct WallpaperGenerator: Sendable {
         case .holo: wallpaper = recipe.holo()
         case .ladder: wallpaper = recipe.ladder()
         case .retro: wallpaper = recipe.retro()
-        case .swatches: wallpaper = recipe.swatches()
+        case .emoji: wallpaper = recipe.emoji()
         case .chevron: wallpaper = recipe.chevron()
         case .keycaps: wallpaper = recipe.keycaps()
         case .liquid: wallpaper = recipe.liquid()
@@ -847,55 +847,6 @@ struct Recipe {
         return w
     }
 
-    // MARK: Swatches
-
-    mutating func swatches() -> Wallpaper {
-        // A palette card: flat ground, a row (or column) of rounded swatches.
-        let card = chance(0.5) ? drift(p.deep, l: 0.02) : drift(p.highlight, l: -0.02)
-        let count = rng.int(in: 5...7)
-        var colors: [RGBA]
-        if chance(0.5) {
-            // Tints of one hue.
-            let hue = rng.pick([p.accent, p.secondary, p.base]).oklch.h + jit(10)
-            let light = card.luminance > 0.5
-            colors = (0..<count).map { i in
-                let u = Double(i) / Double(count - 1)
-                let l = light ? 0.9 - u * 0.62 : 0.32 + u * 0.6
-                return RGBA(l: l, c: 0.12 + 0.06 * sin(u * .pi), h: hue + u * jit(20))
-            }
-        } else {
-            let seq = [p.highlight, p.secondary, p.accent, p.base, p.baseAlt, p.deep, p.accent.adjusted(hue: 40)]
-            colors = Array(seq.prefix(count)).map { drift($0) }
-        }
-        let vertical = chance(0.5)
-        let gap = d(0.02...0.035)
-        let span = d(0.7...0.86)                      // fraction of the canvas width the row spans
-        let corner = d(0.012...0.03)
-        var layers: [Layer] = []
-        if vertical {
-            let w = (span - gap * Double(count - 1)) / Double(count)
-            let h = d(0.42...0.6)
-            for (i, c) in colors.enumerated() {
-                let x = 0.5 - span / 2 + w / 2 + Double(i) * (w + gap)
-                layers.append(Layer(name: "Swatch \(i + 1)",
-                                    shape: .rect(center: [x, 0.5], size: [widthUnits(w), heightUnits(h)], rotation: 0, cornerRadius: corner),
-                                    spread: 0.003, ramp: [RampStop(-1, c), RampStop(0, c), RampStop(1, c.with(alpha: 0))], smoothing: 0))
-            }
-        } else {
-            let h = (0.72 - gap * Double(count - 1)) / Double(count)
-            let w = d(0.28...0.4)
-            for (i, c) in colors.enumerated() {
-                let y = 0.5 - 0.72 / 2 + h / 2 + Double(i) * (h + gap)
-                layers.append(Layer(name: "Swatch \(i + 1)",
-                                    shape: .rect(center: [0.5, y], size: [widthUnits(w), heightUnits(h)], rotation: 0, cornerRadius: corner),
-                                    spread: 0.003, ramp: [RampStop(-1, c), RampStop(0, c), RampStop(1, c.with(alpha: 0))], smoothing: 0))
-            }
-        }
-        var w = Wallpaper(background: .solid(card), layers: layers, effects: effects(vignette: 0, warp: 0, aberration: 0))
-        w.effects.grain = Grain(intensity: d(0.0...0.02), size: 1, chroma: 0, shadowBias: 0)
-        return w
-    }
-
     // MARK: Chevron
 
     mutating func chevron() -> Wallpaper {
@@ -1040,6 +991,56 @@ struct Recipe {
         var w = Wallpaper(background: background, layers: [planet],
                           effects: effects(vignette: d(0.1...0.3), warp: 0, aberration: chance(0.4) ? d(0.5...1.5) : 0))
         w.effects.grain.intensity = d(0.05...0.09)
+        return w
+    }
+
+    // MARK: Emoji
+
+    static let emojiSets: [String] = [
+        "🍒🍋🫧", "🌈⚡️✨", "🪩💜🫶", "🐚🌙⭐️", "🔥🍄🦋", "🎈🍓🍦", "🌵🌞🍉", "👾🎮💥", "🐸🍀🌿", "🍕🍔🌭",
+        "❤️", "✨", "🌊", "🍋", "🖤", "🌸", "☁️", "⚡️", "🪐", "🍒",
+    ]
+
+    mutating func emoji() -> Wallpaper {
+        let set = rng.pick(Recipe.emojiSets)
+        let light = chance(0.55)
+        let base = light ? drift(p.highlight, l: -0.03) : drift(p.deep, l: 0.03)
+        let baseAlt = light ? drift(p.base) : drift(p.baseAlt)
+        let accent = drift(p.accent)
+        let background: Background = chance(0.5)
+            ? .linear([base, baseAlt], angle: d(0...360), smoothing: 0.5)
+            : .mesh([base, baseAlt, accent.mixed(with: base, 0.7), base, drift(p.secondary).mixed(with: base, 0.6), baseAlt], columns: 3, smoothing: 1)
+        let size = d(0.09...0.16)
+        let cell = size * d(1.5...2.2)
+        let rotation = d(-30...30)
+        let pattern = Shape.glyphPattern(text: set, center: [0.5, 0.5], cell: [cell, cell * d(0.9...1.2)], size: size, rotation: rotation,
+                                         stagger: chance(0.7) ? 0.5 : 0, jitter: d(0...0.25), rotationJitter: d(0...35), scaleJitter: d(0...0.25))
+        // A soft shadow copy under the emoji, then the emoji in their own colours.
+        let shadow = Layer(name: "Shadow",
+                           shape: pattern,
+                           spread: d(0.03...0.06),
+                           ramp: [RampStop(-1, RGBA.black.with(alpha: light ? 0.28 : 0.6)), RampStop(0, RGBA.black.with(alpha: light ? 0.22 : 0.5)), RampStop(1, RGBA.black.with(alpha: 0))],
+                           opacity: 1, smoothing: 1, glyphColor: 0)
+        var shadowShape = pattern
+        shadowShape.anchor = [0.5 + d(0.008...0.02), 0.5 + d(0.01...0.025)]
+        var shadowLayer = shadow
+        shadowLayer.shape = shadowShape
+        let glyphs = Layer(name: "Emoji",
+                           shape: pattern,
+                           spread: d(0.01...0.02),
+                           ramp: [RampStop(-1, accent), RampStop(0, accent), RampStop(0.6, accent.with(alpha: 0))],
+                           smoothing: 1, glyphColor: 1)
+        var layers = [shadowLayer, glyphs]
+        if chance(0.35) {
+            // A glow ring around each emoji in the accent colour.
+            layers.insert(Layer(name: "Glow", shape: pattern, spread: d(0.08...0.16),
+                                ramp: [RampStop(-0.2, accent.with(alpha: 0.9)), RampStop(0, accent.with(alpha: 0.7)), RampStop(1, accent.with(alpha: 0))],
+                                blend: light ? .normal : .screen, opacity: d(0.5...0.9), glyphColor: 0), at: 1)
+        }
+        var w = Wallpaper(background: background, layers: layers,
+                          effects: effects(vignette: light ? 0 : d(0.1...0.3), warp: chance(0.4) ? d(0.01...0.03) : 0, aberration: 0))
+        w.effects.warp.scale = 0.6
+        w.effects.grain.intensity = d(0.02...0.05)
         return w
     }
 }

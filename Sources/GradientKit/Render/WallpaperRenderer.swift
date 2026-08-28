@@ -50,6 +50,10 @@ public final class WallpaperRenderer: @unchecked Sendable {
     public let commandQueue: MTLCommandQueue
     private var queue: MTLCommandQueue { commandQueue }
     private let pipeline: MTLComputePipelineState
+    private let rebuildPipeline: MTLComputePipelineState
+    private let appendPipeline: MTLComputePipelineState
+    private let atlas: GlyphAtlas
+    private let smearField = SmearField()
 
     /// Largest texture side this device will allocate. Any size up to this
     /// (per side) renders; there is no other limit on resolution.
@@ -60,6 +64,7 @@ public final class WallpaperRenderer: @unchecked Sendable {
         self.device = device
         guard let queue = device.makeCommandQueue() else { throw RenderError.noMetalDevice }
         self.commandQueue = queue
+        self.atlas = GlyphAtlas(device: device)
         let options = MTLCompileOptions()
         options.mathMode = .fast
         let library: MTLLibrary
@@ -68,8 +73,13 @@ public final class WallpaperRenderer: @unchecked Sendable {
         } catch {
             throw RenderError.shaderCompilation(String(describing: error))
         }
-        guard let fn = library.makeFunction(name: ShaderSource.kernelName) else { throw RenderError.kernelMissing }
+        guard let fn = library.makeFunction(name: ShaderSource.kernelName),
+              let rebuildFn = library.makeFunction(name: "gradientkit_smear_rebuild"),
+              let appendFn = library.makeFunction(name: "gradientkit_smear_append")
+        else { throw RenderError.kernelMissing }
         pipeline = try device.makeComputePipelineState(function: fn)
+        rebuildPipeline = try device.makeComputePipelineState(function: rebuildFn)
+        appendPipeline = try device.makeComputePipelineState(function: appendFn)
     }
 
     // MARK: Render
@@ -121,16 +131,28 @@ public final class WallpaperRenderer: @unchecked Sendable {
               let smearBuf = device.makeBuffer(bytes: scene.smears, length: MemoryLayout<GPUSmear>.stride * scene.smears.count)
         else { throw RenderError.gpuFailure("buffer allocation") }
 
+        guard let textures = atlas.textures(for: scene.glyphs), let sampler = atlas.sampler else {
+            throw RenderError.gpuFailure("glyph atlas")
+        }
+        var globals = scene.globals
+        // Liquify: keep a displacement map up to date (rebuild or append), then
+        // the main pass samples it once per pixel.
+        let map = try smearField.prepare(wallpaper.effects.smears, globals: &globals, scene: scene, width: texture.width, height: texture.height,
+                                         device: device, commandBuffer: cmd, rebuild: rebuildPipeline, append: appendPipeline,
+                                         smearBuffer: smearBuf, sampler: sampler)
         guard let enc = cmd.makeComputeCommandEncoder() else {
             throw RenderError.gpuFailure("command encoder")
         }
-        var globals = scene.globals
         enc.setComputePipelineState(pipeline)
         enc.setTexture(texture, index: 0)
         enc.setBytes(&globals, length: MemoryLayout<GPUGlobals>.stride, index: 0)
         enc.setBuffer(layerBuf, offset: 0, index: 1)
         enc.setBuffer(stopBuf, offset: 0, index: 2)
         enc.setBuffer(smearBuf, offset: 0, index: 3)
+        enc.setTexture(textures.color, index: 1)
+        enc.setTexture(textures.sdf, index: 2)
+        enc.setTexture(map, index: 3)
+        enc.setSamplerState(sampler, index: 0)
 
         let w = pipeline.threadExecutionWidth
         let h = max(1, pipeline.maxTotalThreadsPerThreadgroup / w)
@@ -165,5 +187,98 @@ public final class WallpaperRenderer: @unchecked Sendable {
                                   decode: nil, shouldInterpolate: true, intent: .defaultIntent)
         else { throw RenderError.imageCreation }
         return image
+    }
+}
+
+
+// MARK: - Smear displacement map
+
+/// Two ping-pong `rg32Float` textures holding the accumulated liquify
+/// displacement for the current stroke list and aspect ratio. Appending a
+/// stroke composes it in one pass; anything else rebuilds from the list.
+final class SmearField: @unchecked Sendable {
+    private let lock = NSLock()
+    private var textures: [MTLTexture] = []
+    private var current = 0
+    private var bakedHashes: [Int] = []
+    private var aspectKey: Int = -1
+    private var placeholder: MTLTexture?
+
+    static let resolution = 2048
+
+    func prepare(_ smears: [Smear], globals: inout GPUGlobals, scene: GPUScene, width: Int, height: Int,
+                 device: MTLDevice, commandBuffer cmd: MTLCommandBuffer,
+                 rebuild: MTLComputePipelineState, append: MTLComputePipelineState,
+                 smearBuffer: MTLBuffer, sampler: MTLSamplerState) throws -> MTLTexture {
+        lock.lock(); defer { lock.unlock() }
+        let list = Array(smears.suffix(Effects.maxSmears)).filter { $0.radius > 0 && $0.strength != 0 }
+        if list.isEmpty {
+            globals.misc.z = 0
+            if placeholder == nil {
+                let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg32Float, width: 4, height: 4, mipmapped: false)
+                d.usage = [.shaderRead]; d.storageMode = .shared
+                placeholder = device.makeTexture(descriptor: d)
+                var zeros = [Float](repeating: 0, count: 4 * 4 * 2)
+                placeholder?.replace(region: MTLRegionMake2D(0, 0, 4, 4), mipmapLevel: 0, withBytes: &zeros, bytesPerRow: 4 * 8)
+            }
+            guard let placeholder else { throw RenderError.gpuFailure("smear placeholder") }
+            return placeholder
+        }
+        let aspect = Double(width) / Double(height)
+        let key = Int((aspect * 1000).rounded())
+        let hashes = list.map(\.hashValue)
+        let mapW = aspect >= 1 ? SmearField.resolution : Int(Double(SmearField.resolution) * aspect)
+        let mapH = aspect >= 1 ? Int(Double(SmearField.resolution) / aspect) : SmearField.resolution
+
+        func makeMap() -> MTLTexture? {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg32Float, width: max(mapW, 1), height: max(mapH, 1), mipmapped: false)
+            d.usage = [.shaderRead, .shaderWrite]; d.storageMode = .private
+            return device.makeTexture(descriptor: d)
+        }
+        if textures.count != 2 || textures[0].width != mapW || textures[0].height != mapH {
+            guard let a = makeMap(), let b = makeMap() else { throw RenderError.gpuFailure("smear map") }
+            textures = [a, b]; bakedHashes = []; aspectKey = -1; current = 0
+        }
+
+        let tg = MTLSize(width: 16, height: 16, depth: 1)
+        let groups = MTLSize(width: (mapW + 15) / 16, height: (mapH + 15) / 16, depth: 1)
+        var g = globals
+
+        let canAppend = key == aspectKey && bakedHashes.count <= hashes.count && Array(hashes.prefix(bakedHashes.count)) == bakedHashes
+        if !canAppend {
+            // Full rebuild: one pass over every stroke, newest first (scene.smears is already in that order).
+            g.misc.z = Float(scene.smears.count)
+            guard let enc = cmd.makeComputeCommandEncoder() else { throw RenderError.gpuFailure("smear encoder") }
+            enc.setComputePipelineState(rebuild)
+            enc.setTexture(textures[current], index: 0)
+            enc.setBytes(&g, length: MemoryLayout<GPUGlobals>.stride, index: 0)
+            enc.setBuffer(smearBuffer, offset: 0, index: 3)
+            enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
+            enc.endEncoding()
+            bakedHashes = hashes
+            aspectKey = key
+        } else if bakedHashes.count < hashes.count {
+            // Append each new stroke sample, oldest new one first.
+            for smear in list[bakedHashes.count...] {
+                let p = SIMD2<Float>((Float(smear.position.x) - 0.5) * Float(width) / Float(min(width, height)),
+                                     (Float(smear.position.y) - 0.5) * Float(height) / Float(min(width, height)))
+                let kind: Float = smear.kind == .push ? 0 : (smear.kind == .swirl ? 1 : (smear.kind == .pinch ? 2 : 3))
+                var one = GPUSmear(posVec: SIMD4<Float>(p.x, p.y, Float(smear.vector.x), Float(smear.vector.y)),
+                                   params: SIMD4<Float>(Float(smear.radius), Float(smear.strength), kind, Float(1 + 3 * max(0, min(smear.softness, 1)))))
+                guard let enc = cmd.makeComputeCommandEncoder() else { throw RenderError.gpuFailure("smear encoder") }
+                enc.setComputePipelineState(append)
+                enc.setTexture(textures[current], index: 0)
+                enc.setTexture(textures[1 - current], index: 1)
+                enc.setBytes(&g, length: MemoryLayout<GPUGlobals>.stride, index: 0)
+                enc.setBytes(&one, length: MemoryLayout<GPUSmear>.stride, index: 3)
+                enc.setSamplerState(sampler, index: 0)
+                enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
+                enc.endEncoding()
+                current = 1 - current
+            }
+            bakedHashes = hashes
+        }
+        globals.misc.z = 1   // "map in use"
+        return textures[current]
     }
 }

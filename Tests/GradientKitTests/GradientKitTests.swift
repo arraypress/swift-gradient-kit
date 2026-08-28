@@ -358,3 +358,55 @@ struct StoreTests {
         #expect(Set(Palette.curated.map(\.name)).count == Palette.curated.count)
     }
 }
+
+@Suite("Glyphs")
+struct GlyphTests {
+    private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: Int) {
+        let data = image.dataProvider!.data! as Data
+        let i = y * image.bytesPerRow + x * 4
+        return (Int(data[i]), Int(data[i + 1]), Int(data[i + 2]))
+    }
+
+    @Test("Rasterised glyph has ink, a signed field, and the field is zero at the outline")
+    func rasterise() {
+        let bmp = GlyphRasterizer.render("●", size: 128)
+        let n = bmp.size
+        let centre = bmp.sdf[(n / 2) * n + n / 2]
+        let corner = bmp.sdf[0]
+        #expect(centre < -0.2 && corner > 0.2)
+        #expect(bmp.rgba[((n / 2) * n + n / 2) * 4 + 3] > 200)
+        // Somewhere on the middle row the field crosses zero.
+        let row = (0..<n).map { bmp.sdf[(n / 2) * n + $0] }
+        #expect(row.min()! < 0 && row.max()! > 0)
+        #expect("🍒🍋🫧".glyphs.count == 3 && "a b".glyphs == ["a", "b"])
+    }
+
+    @Test("A glyph layer paints the emoji's own colour and a silhouette layer paints the ramp's")
+    func render() throws {
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .solid(.black))
+        w.effects.grain = .none
+        // A red heart, own colours: centre pixel red-ish.
+        w.layers = [Layer(shape: .glyph(text: "❤️", center: [0.5, 0.5], size: 0.6, rotation: 0), spread: 0.02,
+                          ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))], glyphColor: 1)]
+        var img = try r.render(w, width: 100, height: 100)
+        let p = pixel(img, 50, 55)
+        #expect(p.r > 150 && p.g < 120)
+        #expect(pixel(img, 3, 3).r < 3)
+        // Silhouette: same shape, ramp white, glyphColor 0 → white inside.
+        w.layers[0].glyphColor = 0
+        img = try r.render(w, width: 100, height: 100)
+        let q = pixel(img, 50, 55)
+        #expect(q.r > 240 && q.g > 240 && q.b > 240)
+        // Pattern with several glyphs renders and reaches beyond one cell.
+        w.layers = [Layer(shape: .glyphPattern(text: "●■▲", center: [0.5, 0.5], cell: [0.2, 0.2], size: 0.12, rotation: 15,
+                                               stagger: 0.5, jitter: 0.1, rotationJitter: 20, scaleJitter: 0.1),
+                          spread: 0.01, ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))], glyphColor: 0)]
+        img = try r.render(w, width: 200, height: 120)
+        let data = img.dataProvider!.data! as Data
+        var lit = 0
+        for i in stride(from: 0, to: data.count, by: 4) where data[i] > 200 { lit += 1 }
+        #expect(lit > 200 && lit < 200 * 120 / 2)
+        _ = try r.render(Wallpaper.generate(.emoji, seed: 4), width: 120, height: 200)
+    }
+}
