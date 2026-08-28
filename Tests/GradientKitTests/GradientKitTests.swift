@@ -1,0 +1,190 @@
+//
+//  GradientKitTests.swift
+//  GradientKitTests
+//
+
+import Foundation
+import CoreGraphics
+import ImageIO
+import Testing
+@testable import GradientKit
+
+@Suite("Colour")
+struct ColorTests {
+    @Test("Hex round-trips")
+    func hex() {
+        let c = RGBA(hex: "#FF4553")!
+        #expect(abs(c.r - 1) < 1e-9 && abs(c.g - 0x45 / 255.0) < 1e-9 && abs(c.b - 0x53 / 255.0) < 1e-9)
+        #expect(c.hexString == "#FF4553")
+        #expect(RGBA(hex: "abc")!.hexString == "#AABBCC")
+        #expect(RGBA(hex: "#12345680")!.a == 0x80 / 255.0)
+        #expect(RGBA(hex: "nope") == nil)
+    }
+
+    @Test("OKLab matches Ottosson's reference values")
+    func oklab() {
+        let white = RGBA.white.oklab
+        #expect(abs(white.l - 1) < 1e-3 && abs(white.a) < 1e-3 && abs(white.b) < 1e-3)
+        let red = RGBA(r: 1, g: 0, b: 0).oklab
+        #expect(abs(red.l - 0.628) < 2e-3 && abs(red.a - 0.2249) < 2e-3 && abs(red.b - 0.1258) < 2e-3)
+        // Round trip through OKLab and back.
+        let c = RGBA(hex: "#3DE8F2")!
+        let back = RGBA(lab: c.oklab)
+        #expect(abs(back.r - c.r) < 2e-3 && abs(back.g - c.g) < 2e-3 && abs(back.b - c.b) < 2e-3)
+    }
+
+    @Test("OKLCH out-of-gamut requests are mapped back by chroma only")
+    func gamut() {
+        let c = RGBA(l: 0.7, c: 0.5, h: 30)   // far outside sRGB
+        #expect((0...1).contains(c.r) && (0...1).contains(c.g) && (0...1).contains(c.b))
+        let (l, _, h) = c.oklch
+        #expect(abs(l - 0.7) < 0.02)
+        #expect(abs(h - 30) < 3)
+    }
+}
+
+@Suite("Model")
+struct ModelTests {
+    @Test("Wallpaper JSON round-trips")
+    func json() throws {
+        let w = Wallpaper.generate(.eclipse, seed: 7)
+        let data = try w.jsonData()
+        let back = try Wallpaper(jsonData: data)
+        #expect(back == w)
+        #expect(back.layers.count == w.layers.count)
+    }
+
+    @Test("Shape anchor / size accessors move the whole shape")
+    func shapeAccessors() {
+        var s = Shape.crescent(center: [0.5, 0.5], radius: 0.3, cutCenter: [0.5, 0.7], cutRadius: 0.3)
+        s.anchor = [0.6, 0.5]
+        if case let .crescent(c, _, cc, _) = s {
+            #expect(c == [0.6, 0.5] && cc == [0.6, 0.7])
+        } else { Issue.record("shape changed kind") }
+        s.size = 0.4
+        #expect(s.size == 0.4)
+        var e = Shape.ellipse(center: [0, 0], radii: [0.4, 0.2], rotation: 10)
+        e.size = 0.8
+        if case let .ellipse(_, r, _) = e { #expect(r == [0.8, 0.4]) } else { Issue.record("shape changed kind") }
+    }
+
+    @Test("GPU layouts match the shader's expectations")
+    func layouts() {
+        #expect(MemoryLayout<GPUStop>.stride == 32)
+        #expect(MemoryLayout<GPULayer>.stride == 96)
+        #expect(MemoryLayout<GPUGlobals>.stride == 144)
+    }
+}
+
+@Suite("Generator")
+struct GeneratorTests {
+    @Test("Same seed, same wallpaper; different seed, different wallpaper")
+    func determinism() {
+        for motif in Motif.allCases {
+            let a = Wallpaper.generate(motif, seed: 42)
+            let b = Wallpaper.generate(motif, seed: 42)
+            let c = Wallpaper.generate(motif, seed: 43)
+            #expect(a == b)
+            #expect(a != c)
+        }
+    }
+
+    @Test("Every motif stays within the renderer's limits")
+    func limits() {
+        for motif in Motif.allCases {
+            for seed in 1...25 {
+                let w = Wallpaper.generate(motif, seed: UInt64(seed))
+                #expect(w.layers.count <= Wallpaper.maxLayers)
+                #expect(w.layers.allSatisfy { $0.ramp.count <= Wallpaper.maxStops && $0.spread > 0 })
+                #expect(w.background.stops.count <= Wallpaper.maxStops)
+                #expect(w.title.hasPrefix(motif.displayName))
+            }
+        }
+    }
+
+    @Test("Generated palettes are in gamut and honour the mood")
+    func palettes() {
+        for seed in 1...50 {
+            let dark = Palette.generate(mood: .dark, seed: UInt64(seed))
+            let light = Palette.generate(mood: .light, seed: UInt64(seed))
+            #expect(dark.base.luminance < 0.1)
+            #expect(light.base.luminance > 0.5)
+            #expect(dark.highlight.luminance > dark.accent.luminance)
+            for c in dark.colors + light.colors {
+                #expect((0...1).contains(c.r) && (0...1).contains(c.g) && (0...1).contains(c.b))
+            }
+        }
+    }
+}
+
+@Suite("Renderer")
+struct RendererTests {
+    private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: Int) {
+        let data = image.dataProvider!.data! as Data
+        let bpr = image.bytesPerRow
+        let i = y * bpr + x * 4
+        return (Int(data[i]), Int(data[i + 1]), Int(data[i + 2]))
+    }
+
+    @Test("Solid background renders the requested colour")
+    func solid() throws {
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .solid(RGBA(hex: "#4080C0")!))
+        w.effects.grain = .none
+        let img = try r.render(w, width: 64, height: 32)
+        #expect(img.width == 64 && img.height == 32)
+        let p = pixel(img, 10, 10)
+        #expect(abs(p.r - 0x40) <= 1 && abs(p.g - 0x80) <= 1 && abs(p.b - 0xC0) <= 1)
+    }
+
+    @Test("A circle layer paints its inside colour and leaves the outside alone")
+    func circle() throws {
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .solid(.black))
+        w.effects.grain = .none
+        w.layers = [Layer(shape: .circle(center: [0.5, 0.5], radius: 0.2), spread: 0.01,
+                          ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))])]
+        let img = try r.render(w, width: 200, height: 100)
+        let inside = pixel(img, 100, 50)
+        let outside = pixel(img, 5, 5)
+        #expect(inside.r >= 254 && inside.g >= 254 && inside.b >= 254)
+        #expect(outside.r <= 1 && outside.g <= 1 && outside.b <= 1)
+    }
+
+    @Test("Same seed gives identical bytes; a new seed changes the grain")
+    func grainDeterminism() throws {
+        let r = try WallpaperRenderer()
+        let w = Wallpaper.generate(.orb, seed: 5)
+        let a = try r.render(w, width: 160, height: 90)
+        let b = try r.render(w, width: 160, height: 90)
+        var w2 = w; w2.seed &+= 1
+        let c = try r.render(w2, width: 160, height: 90)
+        let da = a.dataProvider!.data! as Data, db = b.dataProvider!.data! as Data, dc = c.dataProvider!.data! as Data
+        #expect(da == db)
+        #expect(da != dc)
+    }
+
+    @Test("Sixteen-bit render and PNG export")
+    func sixteenBit() throws {
+        let r = try WallpaperRenderer()
+        let w = Wallpaper.generate(.halo, seed: 9)
+        let img = try r.render(w, width: 120, height: 80, options: .init(bitDepth: .sixteen))
+        #expect(img.bitsPerComponent == 16)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("gradientkit-\(UUID().uuidString).png")
+        try ImageExport.write(img, to: url, format: .png)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let src = CGImageSourceCreateWithURL(url as CFURL, nil)!
+        let back = CGImageSourceCreateImageAtIndex(src, 0, nil)!
+        #expect(back.width == 120 && back.height == 80 && back.bitsPerComponent == 16)
+    }
+
+    @Test("Every motif renders without error at a portrait and a landscape size")
+    func allMotifs() throws {
+        let r = try WallpaperRenderer()
+        for motif in Motif.allCases {
+            let w = Wallpaper.generate(motif, seed: 3)
+            _ = try r.render(w, width: 96, height: 54)
+            _ = try r.render(w, width: 54, height: 96)
+        }
+    }
+}
