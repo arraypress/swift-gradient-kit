@@ -305,3 +305,56 @@ struct ShapeFeatureTests {
         #expect(w.layers.count == 1 && w.layers[0].repeatPeriod == 0 && w.palette == nil && w.background.meshColumns == 2)
     }
 }
+
+@Suite("Library stores")
+struct StoreTests {
+    @Test("Palette store: defaults, save, override, reload, delete, import")
+    func paletteStore() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("gk-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var store = PaletteStore.standard(directory: dir)
+        #expect(store.all.count == Palette.curated.count && store.custom.isEmpty)
+
+        var mine = Palette.generate(mood: .light, seed: 3)
+        mine.name = "Mine"
+        try store.save(mine)
+        #expect(store.item(named: "mine") == mine)
+        #expect(store.isCustom(mine) && store.all.count == Palette.curated.count + 1)
+
+        // Same name as a default → overrides it, count unchanged.
+        var override = Palette.iris; override.accent = .black
+        try store.save(override)
+        #expect(store.all.count == Palette.curated.count + 1)
+        #expect(store.item(named: "Iris")?.accent == .black)
+
+        // A fresh store sees the files; a broken file is reported, not fatal.
+        try Data("not json".utf8).write(to: dir.appendingPathComponent("broken.json"))
+        let again = PaletteStore.standard(directory: dir)
+        #expect(again.custom.count == 2 && again.problems.count == 1)
+
+        try store.delete(mine)
+        #expect(store.item(named: "Mine") == nil)
+        #expect(store.item(named: "Iris")?.accent == .black)
+
+        // Import an array file.
+        let arrayURL = FileManager.default.temporaryDirectory.appendingPathComponent("gk-import-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: arrayURL) }
+        try JSONEncoder().encode([Palette.solar, Palette.reef].map { var p = $0; p.name += " 2"; return p }).write(to: arrayURL)
+        try store.importFile(at: arrayURL)
+        #expect(store.item(named: "Solar 2") != nil && store.item(named: "Reef 2") != nil)
+    }
+
+    @Test("Gradient presets: bands, ladders, applying to layers")
+    func gradientPresets() {
+        let retro = GradientPreset(name: "r", bands: [.black, .white, .black], bandWidth: 0.1)
+        #expect(retro.stepped && retro.stops.count == 3 && retro.stops[0].position == 0)
+        #expect(abs(retro.stops[1].position - 0.4) < 1e-9 && abs(retro.stops[2].position - 0.5) < 1e-9)
+        let ladder = Background.ladder([.black, .white], count: 8)
+        #expect(ladder.stepped && ladder.stops.count == 8 && ladder.stops.last!.color.r > 0.99)
+        var layer = Layer(shape: .circle(center: [0.5, 0.5], radius: 0.2), ramp: [])
+        layer.apply(GradientPreset(name: "g", colors: [.black, .white]), from: -1, to: 1)
+        #expect(layer.ramp.count == 2 && layer.ramp[0].position == -1 && layer.ramp[1].position == 1)
+        #expect(GradientPreset.defaults.count > 10 && Set(GradientPreset.defaults.map(\.name)).count == GradientPreset.defaults.count)
+        #expect(Set(Palette.curated.map(\.name)).count == Palette.curated.count)
+    }
+}

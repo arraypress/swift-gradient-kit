@@ -56,14 +56,29 @@ scene.effects.aberration = 1.5
 Everything is a value: `Wallpaper` round-trips through JSON, so a scene is a
 file and a seed is a permanent address for a generated one.
 
+## Styles it covers
+
+Soft rims and eclipses; planet-edge glows; pastel horizons; warped mesh
+gradients; noise fields (nebulae) and their contour lines (topographic
+maps); flowing ribbons; holographic hue sweeps; colour ladders and retro
+diagonal stripes (stepped ramps); palette swatch cards; and — with relief
+lighting, which turns the distance field into a lit height map — extruded
+chevron ridges, bevelled keycap tiles and glossy liquid blobs. A liquify
+brush (`Effects.smears`) pushes, swirls, pinches or bloats the picture like
+wet paint, and because the scene is analytic the strokes export at any size.
+
 ## What's in the box
 
-- **Model** — `Wallpaper`, `Background` (solid / linear / radial),
-  `Layer` with a `Shape`, a signed-distance `ramp`, `spread`, blend mode,
-  opacity, per-layer noise `distortion` and one-sided `lighting`; `Effects`
-  (grain, vignette, domain warp, chromatic aberration, tone). Positions are
-  canvas-normalised so one scene re-composes itself for any aspect ratio;
-  lengths are in units of the shorter side.
+- **Model** — `Wallpaper`, `Background` (solid / linear / radial / mesh,
+  optionally stepped), `Layer` with a `Shape` (circle, ellipse, line, wave,
+  ring, crescent, polygon, rect, capsule, stripes, chevrons, tiles, blob,
+  noise field), a signed-distance `ramp` (optionally stepped, repeating, or
+  hue-swept), `spread`, blend mode, opacity, noise `distortion`, one-sided
+  `lighting` and `relief` (height profile + directional light + specular);
+  `Effects` (grain, vignette, domain warp, chromatic aberration, tone,
+  liquify `smears`). Positions are canvas-normalised so one scene
+  re-composes itself for any aspect ratio; lengths are in units of the
+  shorter side. Older scene JSON keeps decoding as fields are added.
 - **Renderer** — a single Metal compute kernel compiled at first use (plain
   `swift build`, no metallib step). OKLab interpolation between stops,
   linear-light compositing with normal / add / screen / multiply / soft-light
@@ -77,17 +92,27 @@ file and a seed is a permanent address for a generated one.
   `highlight`, `deep`) every recipe is written against; twelve curated
   palettes lifted from reference wallpapers; OKLCH generation from a seed
   with split-complement / analogous-clash / triad harmonies.
-- **Generator** — seven motifs, each a seeded recipe: `eclipse`, `orb`,
-  `horizon`, `hill`, `crescent`, `halo`, `aurora`. Every position, radius,
+- **Generator** — 21 motifs, each a seeded recipe: `eclipse`, `orb`,
+  `horizon`, `hill`, `crescent`, `halo`, `glow`, `classic`, `aurora`,
+  `mesh`, `nebula`, `topo`, `holo`, `ribbons`, `chevron`, `keycaps`,
+  `liquid`, `prism`, `ladder`, `retro`, `swatches`. Every position, radius,
   spread, ramp and effect is jittered from the seed, so a motif is a family
   and a seed picks one member. `SeededRandom` is SplitMix64 with its own
   distributions, so seeds are stable across Swift versions.
+- **Library** — `PaletteStore` / `GradientStore`: built-in defaults plus a
+  folder of JSON files (one item or an array per file), `reload()`,
+  `save`, `delete`, `importFile`; custom items override defaults by name.
+  `GradientPreset` carries stops + stepped + angle and applies to a
+  background or a layer; `Layer.starter(kind, palette:)` gives an editor a
+  palette-matched layer of any shape.
 - **Resolutions** — native pixel presets for Macs, iPhones, iPads, Watch,
   and social sizes.
 - **Export** — PNG (16-bit preserved), JPEG, HEIC via ImageIO.
-- **GradientKitUI** — `WallpaperView(wallpaper)` renders at the view's
-  pixel size off the main thread, coalescing edits; `SharedRenderer` is the
-  process-wide actor behind it.
+- **GradientKitUI** — `WallpaperMetalView(wallpaper)` is a zero-copy live
+  preview: the kernel writes straight into the MTKView drawable (no
+  readback), so edits are one dispatch even on a 5K-backed view.
+  `WallpaperView` is the CGImage-backed alternative for thumbnails;
+  `SharedRenderer` is the process-wide actor behind it.
 
 ## Samples
 
