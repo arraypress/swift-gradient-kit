@@ -32,19 +32,35 @@ public struct Wallpaper: Codable, Sendable, Equatable {
     /// The palette the scene was composed in, so editors can offer matching
     /// colours for new layers. Optional: hand-built scenes may not have one.
     public var palette: Palette?
+    /// Where a generated scene came from, so an editor can re-roll or
+    /// recolour it. Nil for hand-built scenes.
+    public var origin: Origin?
 
     public init(background: Background,
                 layers: [Layer] = [],
                 effects: Effects = Effects(),
                 seed: UInt32 = 1,
                 title: String = "",
-                palette: Palette? = nil) {
+                palette: Palette? = nil,
+                origin: Origin? = nil) {
         self.background = background
         self.layers = layers
         self.effects = effects
         self.seed = seed
         self.title = title
         self.palette = palette
+        self.origin = origin
+    }
+
+    public struct Origin: Codable, Sendable, Equatable {
+        public var motif: String
+        public var seed: UInt64
+        /// The palette the user chose explicitly; nil when the seed chose.
+        public var paletteName: String?
+
+        public init(motif: String, seed: UInt64, paletteName: String? = nil) {
+            self.motif = motif; self.seed = seed; self.paletteName = paletteName
+        }
     }
 
     /// The renderer's hard ceiling on layers in one scene.
@@ -609,11 +625,29 @@ public struct Effects: Codable, Sendable, Equatable {
     /// vector inside its radius; later strokes smear earlier ones, like
     /// dragging a finger through wet paint.
     public var smears: [Smear]
+    /// Effects switched off without losing their settings — an editor's
+    /// "adjustment layer" toggles.
+    public var bypassed: Set<Kind>
+
+    public enum Kind: String, Codable, Sendable, CaseIterable, Identifiable {
+        case grain, vignette, warp, aberration, tone, liquify
+        public var id: String { rawValue }
+        public var displayName: String {
+            switch self {
+            case .grain: "Grain"
+            case .vignette: "Vignette"
+            case .warp: "Warp"
+            case .aberration: "Aberration"
+            case .tone: "Tone"
+            case .liquify: "Liquify"
+            }
+        }
+    }
 
     public init(grain: Grain = Grain(), vignette: Vignette = Vignette(), warp: Warp = Warp(),
-                aberration: Double = 0, tone: Tone = Tone(), smears: [Smear] = []) {
+                aberration: Double = 0, tone: Tone = Tone(), smears: [Smear] = [], bypassed: Set<Kind> = []) {
         self.grain = grain; self.vignette = vignette; self.warp = warp
-        self.aberration = aberration; self.tone = tone; self.smears = smears
+        self.aberration = aberration; self.tone = tone; self.smears = smears; self.bypassed = bypassed
     }
 
     public init(from decoder: Decoder) throws {
@@ -624,6 +658,34 @@ public struct Effects: Codable, Sendable, Equatable {
         aberration = try c.decodeIfPresent(Double.self, forKey: .aberration) ?? 0
         tone = try c.decodeIfPresent(Tone.self, forKey: .tone) ?? Tone()
         smears = try c.decodeIfPresent([Smear].self, forKey: .smears) ?? []
+        bypassed = try c.decodeIfPresent(Set<Kind>.self, forKey: .bypassed) ?? []
+    }
+
+    public func isActive(_ kind: Kind) -> Bool { !bypassed.contains(kind) }
+
+    /// Whether the effect does anything at its current settings.
+    public func hasEffect(_ kind: Kind) -> Bool {
+        switch kind {
+        case .grain: grain.intensity > 0
+        case .vignette: vignette.intensity > 0
+        case .warp: warp.amount > 0
+        case .aberration: aberration > 0
+        case .tone: tone != Tone()
+        case .liquify: !smears.isEmpty
+        }
+    }
+
+    /// The effects with bypassed ones neutralised — what the renderer sees.
+    public var resolved: Effects {
+        var e = self
+        if bypassed.contains(.grain) { e.grain.intensity = 0 }
+        if bypassed.contains(.vignette) { e.vignette.intensity = 0 }
+        if bypassed.contains(.warp) { e.warp.amount = 0 }
+        if bypassed.contains(.aberration) { e.aberration = 0 }
+        if bypassed.contains(.tone) { e.tone = Tone() }
+        if bypassed.contains(.liquify) { e.smears = [] }
+        e.bypassed = []
+        return e
     }
 
     /// The renderer's ceiling on smears per scene; extra ones are dropped.

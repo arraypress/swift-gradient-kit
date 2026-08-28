@@ -137,7 +137,7 @@ public final class WallpaperRenderer: @unchecked Sendable {
         var globals = scene.globals
         // Liquify: keep a displacement map up to date (rebuild or append), then
         // the main pass samples it once per pixel.
-        let map = try smearField.prepare(wallpaper.effects.smears, globals: &globals, scene: scene, width: texture.width, height: texture.height,
+        let map = try smearField.prepare(wallpaper.effects.resolved.smears, globals: &globals, scene: scene, width: texture.width, height: texture.height,
                                          device: device, commandBuffer: cmd, rebuild: rebuildPipeline, append: appendPipeline,
                                          smearBuffer: smearBuf, sampler: sampler)
         guard let enc = cmd.makeComputeCommandEncoder() else {

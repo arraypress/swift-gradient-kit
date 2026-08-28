@@ -60,6 +60,35 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
 
     public var displayName: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
 
+    public enum Family: String, CaseIterable, Sendable, Identifiable {
+        case soft, fields, surfaces, flat, fun
+        public var id: String { rawValue }
+        public var displayName: String {
+            switch self {
+            case .soft: "Soft"
+            case .fields: "Fields"
+            case .surfaces: "Surfaces"
+            case .flat: "Flat"
+            case .fun: "Fun"
+            }
+        }
+    }
+
+    public var family: Family {
+        switch self {
+        case .eclipse, .orb, .horizon, .hill, .crescent, .halo, .glow, .classic: .soft
+        case .aurora, .mesh, .nebula, .topo, .holo, .ribbons: .fields
+        case .chevron, .keycaps, .liquid, .prism: .surfaces
+        case .ladder, .retro: .flat
+        case .emoji, .symbols: .fun
+        }
+    }
+
+    /// Motifs in gallery order, grouped by family.
+    public static func grouped() -> [(Family, [Motif])] {
+        Family.allCases.map { f in (f, allCases.filter { $0.family == f }) }
+    }
+
     /// The palette mood the recipe was designed around.
     public var preferredMood: Palette.Mood {
         switch self {
@@ -83,6 +112,7 @@ public struct WallpaperGenerator: Sendable {
     public func make(_ motif: Motif? = nil, palette: Palette? = nil, aspect: Double = 16.0 / 9.0) -> Wallpaper {
         var rng = SeededRandom(seed: seed)
         let motif = motif ?? rng.pick(Motif.allCases)
+        let explicitPalette = palette
         let palette = palette ?? WallpaperGenerator.choosePalette(for: motif, using: &rng)
         var recipe = Recipe(rng: rng.fork(), palette: palette, aspect: aspect)
         var wallpaper: Wallpaper
@@ -113,6 +143,7 @@ public struct WallpaperGenerator: Sendable {
         wallpaper.seed = UInt32(truncatingIfNeeded: seed)
         wallpaper.title = "\(motif.displayName) · \(palette.name) · \(seed)"
         wallpaper.palette = palette
+        wallpaper.origin = Wallpaper.Origin(motif: motif.rawValue, seed: seed, paletteName: explicitPalette?.name)
         return wallpaper
     }
 

@@ -250,8 +250,8 @@ public struct GPUScene {
         }
         g.layerCount = Int32(layers.count)
 
-        // Effects
-        let e = w.effects
+        // Effects (bypassed ones neutralised)
+        let e = w.effects.resolved
         g.warp = SIMD4<Float>(Float(e.warp.amount), Float(e.warp.scale), Float(max(1, min(e.warp.octaves, 6))), 0)
         // Grain size is specified at a 1440-high reference so the texture
         // looks the same in a preview and a 5K export.
