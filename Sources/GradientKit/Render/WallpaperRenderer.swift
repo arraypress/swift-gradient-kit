@@ -45,7 +45,10 @@ public final class WallpaperRenderer: @unchecked Sendable {
     }
 
     public let device: MTLDevice
-    private let queue: MTLCommandQueue
+    /// Shared with views that present drawables, so a preview can encode the
+    /// wallpaper and present in one command buffer.
+    public let commandQueue: MTLCommandQueue
+    private var queue: MTLCommandQueue { commandQueue }
     private let pipeline: MTLComputePipelineState
 
     /// Largest texture side this device will allocate. Any size up to this
@@ -56,7 +59,7 @@ public final class WallpaperRenderer: @unchecked Sendable {
         guard let device = device ?? MTLCreateSystemDefaultDevice() else { throw RenderError.noMetalDevice }
         self.device = device
         guard let queue = device.makeCommandQueue() else { throw RenderError.noMetalDevice }
-        self.queue = queue
+        self.commandQueue = queue
         let options = MTLCompileOptions()
         options.mathMode = .fast
         let library: MTLLibrary
@@ -95,16 +98,30 @@ public final class WallpaperRenderer: @unchecked Sendable {
         return texture
     }
 
-    /// Render into an existing writable texture (e.g. a drawable).
+    /// Render into an existing writable texture and wait for the GPU.
     public func render(_ wallpaper: Wallpaper, into texture: MTLTexture) throws {
-        let ditherStep: Float = texture.pixelFormat == .rgba16Unorm ? 1 / 65535 : 1 / 255
+        guard let cmd = queue.makeCommandBuffer() else { throw RenderError.gpuFailure("command buffer") }
+        try encode(wallpaper, into: texture, commandBuffer: cmd)
+        cmd.commit()
+        cmd.waitUntilCompleted()
+        if let error = cmd.error { throw RenderError.gpuFailure(String(describing: error)) }
+    }
+
+    /// Encode the wallpaper into `texture` on a command buffer you own —
+    /// present a drawable on the same buffer for a zero-copy live preview.
+    /// Any writable 8- or 16-bit-per-channel format works (`bgra8Unorm`
+    /// drawables included); dithering adapts to the format's bit depth.
+    public func encode(_ wallpaper: Wallpaper, into texture: MTLTexture, commandBuffer cmd: MTLCommandBuffer) throws {
+        let sixteen = texture.pixelFormat == .rgba16Unorm || texture.pixelFormat == .rgba16Float
+        let ditherStep: Float = sixteen ? 1 / 65535 : 1 / 255
         let scene = GPUScene(wallpaper, width: texture.width, height: texture.height, ditherStep: ditherStep)
 
         guard let layerBuf = device.makeBuffer(bytes: scene.layers, length: MemoryLayout<GPULayer>.stride * scene.layers.count),
-              let stopBuf = device.makeBuffer(bytes: scene.stops, length: MemoryLayout<GPUStop>.stride * scene.stops.count)
+              let stopBuf = device.makeBuffer(bytes: scene.stops, length: MemoryLayout<GPUStop>.stride * scene.stops.count),
+              let smearBuf = device.makeBuffer(bytes: scene.smears, length: MemoryLayout<GPUSmear>.stride * scene.smears.count)
         else { throw RenderError.gpuFailure("buffer allocation") }
 
-        guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeComputeCommandEncoder() else {
+        guard let enc = cmd.makeComputeCommandEncoder() else {
             throw RenderError.gpuFailure("command encoder")
         }
         var globals = scene.globals
@@ -113,6 +130,7 @@ public final class WallpaperRenderer: @unchecked Sendable {
         enc.setBytes(&globals, length: MemoryLayout<GPUGlobals>.stride, index: 0)
         enc.setBuffer(layerBuf, offset: 0, index: 1)
         enc.setBuffer(stopBuf, offset: 0, index: 2)
+        enc.setBuffer(smearBuf, offset: 0, index: 3)
 
         let w = pipeline.threadExecutionWidth
         let h = max(1, pipeline.maxTotalThreadsPerThreadgroup / w)
@@ -120,9 +138,6 @@ public final class WallpaperRenderer: @unchecked Sendable {
         let groups = MTLSize(width: (texture.width + w - 1) / w, height: (texture.height + h - 1) / h, depth: 1)
         enc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
         enc.endEncoding()
-        cmd.commit()
-        cmd.waitUntilCompleted()
-        if let error = cmd.error { throw RenderError.gpuFailure(String(describing: error)) }
     }
 
     // MARK: Readback

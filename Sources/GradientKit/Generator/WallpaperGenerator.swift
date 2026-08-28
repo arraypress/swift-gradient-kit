@@ -25,6 +25,34 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
     case halo
     /// Warped, overlapping colour fields — the loosest of the set.
     case aurora
+    /// A warped colour grid — the classic mesh gradient.
+    case mesh
+    /// Contour lines of a noise field over a dark ground — a topographic map.
+    case topo
+    /// Flowing stripes bent by noise, like ribbons of light.
+    case ribbons
+    /// A rounded polygon with a lit rim — geometric and minimal.
+    case prism
+    /// A noise field mapped through the palette — clouds and nebulae.
+    case nebula
+    /// Hue that sweeps across a soft edge — holographic foil.
+    case holo
+    /// Flat colour bands stepping through a ramp — the colour ladder.
+    case ladder
+    /// Hard diagonal stripes between two flat fields — retro racing stripes.
+    case retro
+    /// Rounded swatches of a palette laid out on a card.
+    case swatches
+    /// Extruded, lit zigzag ridges over a colour sweep.
+    case chevron
+    /// A field of bevelled tiles with a light sweeping across it.
+    case keycaps
+    /// A glossy 3-D blob with folds — liquid.
+    case liquid
+    /// A plain two- or three-colour diagonal gradient with grain.
+    case classic
+    /// A planet's edge: a bright curved horizon over a dark sky.
+    case glow
 
     public var id: String { rawValue }
 
@@ -33,9 +61,9 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
     /// The palette mood the recipe was designed around.
     public var preferredMood: Palette.Mood {
         switch self {
-        case .eclipse, .hill, .halo, .aurora: .dark
-        case .orb: .dark
-        case .horizon, .crescent: .light
+        case .eclipse, .hill, .halo, .aurora, .topo, .nebula, .prism: .dark
+        case .orb, .ribbons, .holo, .chevron, .keycaps, .liquid, .glow, .classic: .dark
+        case .horizon, .crescent, .mesh, .ladder, .retro, .swatches: .light
         }
     }
 }
@@ -63,9 +91,24 @@ public struct WallpaperGenerator: Sendable {
         case .crescent: wallpaper = recipe.crescent()
         case .halo: wallpaper = recipe.halo()
         case .aurora: wallpaper = recipe.aurora()
+        case .mesh: wallpaper = recipe.mesh()
+        case .topo: wallpaper = recipe.topo()
+        case .ribbons: wallpaper = recipe.ribbons()
+        case .prism: wallpaper = recipe.prism()
+        case .nebula: wallpaper = recipe.nebula()
+        case .holo: wallpaper = recipe.holo()
+        case .ladder: wallpaper = recipe.ladder()
+        case .retro: wallpaper = recipe.retro()
+        case .swatches: wallpaper = recipe.swatches()
+        case .chevron: wallpaper = recipe.chevron()
+        case .keycaps: wallpaper = recipe.keycaps()
+        case .liquid: wallpaper = recipe.liquid()
+        case .classic: wallpaper = recipe.classic()
+        case .glow: wallpaper = recipe.glow()
         }
         wallpaper.seed = UInt32(truncatingIfNeeded: seed)
         wallpaper.title = "\(motif.displayName) · \(palette.name) · \(seed)"
+        wallpaper.palette = palette
         return wallpaper
     }
 
@@ -94,12 +137,18 @@ struct Recipe {
     /// Height of the canvas in min-side units' inverse: multiply a min-side
     /// length by this to get the same length as a fraction of the height.
     let minSideOverHeight: Double
+    let aspect: Double
 
     init(rng: SeededRandom, palette: Palette, aspect: Double) {
         self.rng = rng
         self.p = palette
+        self.aspect = max(aspect, 0.1)
         self.minSideOverHeight = min(1, max(aspect, 0.1))
     }
+
+    /// A fraction of the canvas width / height expressed in min-side units.
+    func widthUnits(_ fraction: Double) -> Double { fraction * aspect / minSideOverHeight }
+    func heightUnits(_ fraction: Double) -> Double { fraction / minSideOverHeight }
 
     // Shorthands
     private mutating func d(_ r: ClosedRange<Double>) -> Double { rng.double(in: r) }
@@ -504,6 +553,493 @@ struct Recipe {
                           effects: effects(vignette: dark ? d(0.1...0.3) : 0, warp: d(0.03...0.07),
                                            aberration: chance(0.4) ? d(0.5...2) : 0))
         w.effects.grain.intensity = d(0.06...0.1)
+        return w
+    }
+
+    // MARK: Mesh
+
+    mutating func mesh() -> Wallpaper {
+        // A 3×3 (sometimes 4×3) grid of palette colours, warped hard.
+        let cols = chance(0.4) ? 4 : 3, rows = 3
+        // Saturated cells dominate; the ground colours only appear as accents.
+        let vivid = [drift(p.accent), drift(p.accent, h: 30), drift(p.secondary), drift(p.secondary, h: -25),
+                     drift(p.accent).adjusted(lightness: 0.12, chroma: 0.04), drift(p.secondary).adjusted(lightness: -0.12, chroma: 0.04)]
+        let calm = [drift(p.base), drift(p.baseAlt), drift(p.highlight, l: -0.05)]
+        var cells: [RGBA] = []
+        for _ in 0..<(cols * rows) {
+            let c = chance(0.7) ? rng.pick(vivid) : rng.pick(calm)
+            cells.append(c.adjusted(lightness: jit(0.04), hue: jit(10)))
+        }
+        cells[rng.int(in: 0...(cells.count - 1))] = drift(p.deep)
+        let background = Background.mesh(cells, columns: cols, smoothing: d(0.6...1))
+        var w = Wallpaper(background: background, layers: [],
+                          effects: effects(vignette: 0, warp: d(0.08...0.18), aberration: chance(0.3) ? d(0.5...1.5) : 0))
+        w.effects.warp.scale = d(0.6...1.2)
+        w.effects.warp.octaves = 3
+        w.effects.grain.intensity = d(0.05...0.08)
+        return w
+    }
+
+    // MARK: Topo
+
+    mutating func topo() -> Wallpaper {
+        let deep = drift(p.deep)
+        let base = drift(p.base)
+        let accent = drift(p.accent)
+        let highlight = drift(p.highlight)
+        let secondary = drift(p.secondary)
+        let background = Background.linear([deep, base], angle: d(0...360), smoothing: 0.5)
+
+        // Contours: a noise field folded every `period`, with a thin bright line at 0.
+        let lineWidth = d(0.03...0.07)
+        let contours = Layer(name: "Contours",
+                             shape: .noise(offset: [d(0...1), d(0...1)], scale: d(0.4...0.8), octaves: rng.int(in: 2...4)),
+                             spread: d(0.14...0.24),
+                             ramp: [
+                                 RampStop(-0.5, accent.with(alpha: 0)),
+                                 RampStop(-lineWidth * 3, accent.with(alpha: 0.25)),
+                                 RampStop(-lineWidth, highlight.mixed(with: accent, 0.3)),
+                                 RampStop(0, highlight),
+                                 RampStop(lineWidth, highlight.mixed(with: accent, 0.3)),
+                                 RampStop(lineWidth * 3, accent.with(alpha: 0.25)),
+                                 RampStop(0.5, accent.with(alpha: 0)),
+                             ],
+                             blend: .screen,
+                             opacity: d(0.6...0.95),
+                             smoothing: 0.7,
+                             repeatPeriod: 1)
+        // A soft fill between lines so the map has terrain, not just lines.
+        let terrain = Layer(name: "Terrain",
+                            shape: contours.shape,
+                            spread: 0.6,
+                            ramp: [RampStop(-1, deep), RampStop(0, base.mixed(with: secondary, 0.3)), RampStop(1, secondary.mixed(with: base, 0.4))],
+                            opacity: d(0.3...0.6),
+                            smoothing: 0.5)
+        let glow = Layer(name: "Glow",
+                         shape: .circle(center: [d(0.2...0.8), d(0.2...0.8)], radius: d(0.2...0.4)),
+                         spread: d(0.5...0.8),
+                         ramp: [RampStop(-0.5, accent), RampStop(0.2, accent.mixed(with: base, 0.4)), RampStop(1.2, base.with(alpha: 0))],
+                         blend: .screen, opacity: d(0.3...0.6))
+        var w = Wallpaper(background: background, layers: [terrain, glow, contours],
+                          effects: effects(vignette: d(0.15...0.35), warp: 0, aberration: chance(0.4) ? d(0.5...1.5) : 0))
+        w.effects.grain.intensity = d(0.05...0.08)
+        return w
+    }
+
+    // MARK: Ribbons
+
+    mutating func ribbons() -> Wallpaper {
+        let deep = drift(p.deep)
+        let base = drift(p.base)
+        let accent = drift(p.accent)
+        let secondary = drift(p.secondary)
+        let highlight = drift(p.highlight)
+        let background = Background.linear([deep, base], angle: 90 + jit(30), smoothing: 0.5)
+        let angle = 90 + jit(35)
+        let period = d(0.16...0.3)
+        let through: Vec2 = [0.5, 0.5]
+        let ribbons = Layer(name: "Ribbons",
+                            shape: .stripes(through: through, angle: angle, period: period, width: period * d(0.3...0.5), bend: d(-0.3...0.3)),
+                            spread: period * d(0.15...0.3),
+                            ramp: [
+                                RampStop(-1.5, highlight.mixed(with: accent, 0.4)),
+                                RampStop(-0.6, accent),
+                                RampStop(0, accent.adjusted(lightness: -0.15)),
+                                RampStop(0.6, secondary.with(alpha: 0.5)),
+                                RampStop(1.8, base.with(alpha: 0)),
+                            ],
+                            opacity: d(0.75...1),
+                            smoothing: 1,
+                            distortion: Distortion(amount: d(0.08...0.2), scale: d(0.6...1.2), octaves: 3))
+        let counter = Layer(name: "Counter ribbons",
+                            shape: .stripes(through: [0.5, 0.5], angle: angle + jit(25), period: period * d(1.3...2), width: period * d(0.2...0.35), bend: d(-0.2...0.2)),
+                            spread: period * d(0.2...0.4),
+                            ramp: [RampStop(-1.2, secondary), RampStop(0, secondary.mixed(with: base, 0.3)), RampStop(1.5, base.with(alpha: 0))],
+                            blend: .screen,
+                            opacity: d(0.3...0.6),
+                            smoothing: 1,
+                            distortion: Distortion(amount: d(0.1...0.25), scale: d(0.5...1), octaves: 3))
+        var w = Wallpaper(background: background, layers: [counter, ribbons],
+                          effects: effects(vignette: d(0.1...0.3), warp: d(0.02...0.06), aberration: chance(0.4) ? d(0.5...1.5) : 0))
+        w.effects.grain.intensity = d(0.05...0.08)
+        return w
+    }
+
+    // MARK: Prism
+
+    mutating func prism() -> Wallpaper {
+        let deep = drift(p.deep)
+        let base = drift(p.base)
+        let accent = drift(p.accent)
+        let secondary = drift(p.secondary)
+        let highlight = drift(p.highlight)
+        let background = Background.radial([base, deep], center: [0.5 + jit(0.2), 0.5 + jit(0.2)], radius: d(0.9...1.4), smoothing: 0.5)
+        let sides = rng.pick([3, 4, 5, 6, 6, 8])
+        let radius = d(0.28...0.45)
+        let center: Vec2 = [0.5 + jit(0.2), 0.5 + jit(0.15)]
+        let litAngle = d(0...360)
+        let shape: Shape = chance(0.25)
+            ? .rect(center: center, size: [radius * d(1.2...2), radius * 1.2], rotation: jit(25), cornerRadius: radius * d(0.15...0.4))
+            : .polygon(center: center, radius: radius, sides: sides, rotation: d(0...360), rounding: radius * d(0.05...0.25))
+        let body = Layer(name: "Prism",
+                         shape: shape,
+                         spread: d(0.18...0.3),
+                         ramp: [
+                             RampStop(-1.5, deep),
+                             RampStop(-0.5, deep.mixed(with: base, 0.3)),
+                             RampStop(-0.04, deep),
+                             RampStop(0.04, highlight),
+                             RampStop(0.2, accent),
+                             RampStop(0.6, secondary.adjusted(lightness: -0.15)),
+                             RampStop(1.4, base.with(alpha: 0)),
+                         ],
+                         smoothing: 1,
+                         lighting: Lighting(angle: litAngle, amount: d(0.5...0.8)))
+        let rim2 = Layer(name: "Second rim",
+                         shape: shape,
+                         spread: d(0.12...0.22),
+                         ramp: [RampStop(-0.02, deep.with(alpha: 0)), RampStop(0.05, highlight.mixed(with: secondary, 0.4)), RampStop(0.3, secondary), RampStop(1, base.with(alpha: 0))],
+                         blend: .screen,
+                         opacity: d(0.6...0.9),
+                         smoothing: 1,
+                         lighting: Lighting(angle: litAngle + 180 + jit(40), amount: d(0.7...0.9)))
+        var w = Wallpaper(background: background, layers: [body, rim2],
+                          effects: effects(vignette: d(0.1...0.3), warp: 0, aberration: chance(0.5) ? d(0.8...2) : 0))
+        w.effects.grain.intensity = d(0.05...0.09)
+        return w
+    }
+
+    // MARK: Nebula
+
+    mutating func nebula() -> Wallpaper {
+        let deep = drift(p.deep)
+        let base = drift(p.base)
+        let accent = drift(p.accent)
+        let secondary = drift(p.secondary)
+        let highlight = drift(p.highlight)
+        let background = Background.radial([base, deep], center: [d(0.3...0.7), d(0.3...0.7)], radius: d(0.8...1.3), smoothing: 0.5)
+        let clouds = Layer(name: "Clouds",
+                           shape: .noise(offset: [d(0...1), d(0...1)], scale: d(0.5...1.0), octaves: rng.int(in: 3...4)),
+                           spread: d(0.7...1.1),
+                           ramp: [
+                               RampStop(-1.0, deep.with(alpha: 0)),
+                               RampStop(-0.2, secondary.with(alpha: 0.4)),
+                               RampStop(0.35, accent.with(alpha: 0.85)),
+                               RampStop(0.8, highlight.mixed(with: accent, 0.4)),
+                           ],
+                           blend: .screen,
+                           opacity: d(0.6...0.9),
+                           smoothing: 0.8,
+                           hueSweep: chance(0.5) ? d(-40...40) : 0)
+        let wisps = Layer(name: "Wisps",
+                          shape: .noise(offset: [d(0...1), d(0...1)], scale: d(1.2...2.0), octaves: 4),
+                          spread: d(0.5...0.8),
+                          ramp: [RampStop(-0.6, secondary.with(alpha: 0)), RampStop(0.4, secondary.with(alpha: 0.35)), RampStop(1.0, highlight.with(alpha: 0.5))],
+                          blend: .screen,
+                          opacity: d(0.2...0.4),
+                          smoothing: 0.8)
+        let star = Layer(name: "Core",
+                         shape: .circle(center: [d(0.25...0.75), d(0.25...0.75)], radius: d(0.02...0.06)),
+                         spread: d(0.25...0.45),
+                         ramp: [RampStop(-1, highlight), RampStop(0, highlight), RampStop(0.3, accent), RampStop(1.2, base.with(alpha: 0))],
+                         blend: .screen,
+                         opacity: d(0.5...0.9))
+        var w = Wallpaper(background: background, layers: [clouds, wisps, star],
+                          effects: effects(vignette: d(0.2...0.4), warp: d(0.02...0.06), aberration: chance(0.5) ? d(0.5...1.5) : 0))
+        w.effects.grain.intensity = d(0.06...0.1)
+        return w
+    }
+
+    // MARK: Holo
+
+    mutating func holo() -> Wallpaper {
+        let deep = drift(p.deep)
+        let base = drift(p.base)
+        let accent = drift(p.accent)
+        let highlight = drift(p.highlight)
+        let background = Background.linear([deep, base], angle: d(0...360), smoothing: 0.5)
+        // A wide soft edge whose hue turns through the spectrum across the ramp.
+        let angle = d(0...360)
+        let foil = Layer(name: "Foil",
+                         shape: .line(through: [0.5 + jit(0.2), 0.5 + jit(0.2)], angle: angle, bend: d(-0.4...0.4)),
+                         spread: d(0.5...0.9),
+                         ramp: [
+                             RampStop(-1.6, accent.with(alpha: 0)),
+                             RampStop(-0.9, accent.adjusted(chroma: 0.05)),
+                             RampStop(0, accent.adjusted(lightness: 0.1, chroma: 0.05)),
+                             RampStop(0.9, accent.adjusted(chroma: 0.05)),
+                             RampStop(1.6, accent.with(alpha: 0)),
+                         ],
+                         blend: p.mood == .dark ? .screen : .normal,
+                         opacity: d(0.75...1),
+                         smoothing: 0.4,
+                         distortion: Distortion(amount: d(0.05...0.15), scale: d(0.5...1.1), octaves: 3),
+                         hueSweep: rng.sign() * d(160...300))
+        let sheen = Layer(name: "Sheen",
+                          shape: .stripes(through: [0.5, 0.5], angle: angle + 90 + jit(30), period: d(0.35...0.7), width: 0.05, bend: d(-0.3...0.3)),
+                          spread: d(0.25...0.45),
+                          ramp: [RampStop(-1.5, highlight.with(alpha: 0)), RampStop(0, highlight.with(alpha: d(0.3...0.6))), RampStop(1.5, highlight.with(alpha: 0))],
+                          blend: .screen,
+                          opacity: d(0.5...0.9),
+                          smoothing: 1,
+                          distortion: Distortion(amount: d(0.05...0.12), scale: 0.8, octaves: 2))
+        var w = Wallpaper(background: background, layers: [foil, sheen],
+                          effects: effects(vignette: d(0...0.2), warp: d(0.04...0.1), aberration: d(0.5...2)))
+        w.effects.grain.intensity = d(0.06...0.09)
+        return w
+    }
+
+    // MARK: Ladder
+
+    mutating func ladder() -> Wallpaper {
+        // Either a single-hue ladder from a gradient preset or a multi-hue retro ladder.
+        let count = rng.int(in: 7...10)
+        let angle = chance(0.85) ? 90.0 : (chance(0.5) ? 0 : 90 + jit(30))
+        let background: Background
+        if chance(0.55) {
+            let ladders = GradientPreset.defaults.filter { $0.name.hasSuffix("Ladder") }
+            var preset = rng.pick(ladders)
+            preset.stops = preset.stops.map { RampStop($0.position, $0.color.adjusted(lightness: jit(0.03), hue: jit(8))) }
+            background = .ladder(preset.colors, count: count, angle: angle)
+        } else {
+            // Palette walk: light → accent → dark, or the whole palette in sequence.
+            let seq: [RGBA] = chance(0.5)
+                ? [drift(p.highlight), drift(p.accent), drift(p.deep)]
+                : [drift(p.base), drift(p.secondary), drift(p.highlight), drift(p.accent), drift(p.deep)]
+            background = .ladder(seq, count: count, angle: angle)
+        }
+        var w = Wallpaper(background: background, effects: effects(vignette: 0, warp: 0, aberration: 0))
+        w.effects.grain = Grain(intensity: d(0.0...0.03), size: 1, chroma: 0.1, shadowBias: 0)
+        return w
+    }
+
+    // MARK: Retro
+
+    mutating func retro() -> Wallpaper {
+        let retros = GradientPreset.defaults.filter { $0.name.hasPrefix("Retro") }
+        var bands: [RGBA]
+        if chance(0.6) {
+            bands = rng.pick(retros).colors.map { $0.adjusted(lightness: jit(0.02), hue: jit(5)) }
+        } else {
+            // From the palette: dark field, two mid tones, a cream, two warm tones, a saturated field.
+            bands = [drift(p.deep), drift(p.base), drift(p.secondary), drift(p.highlight),
+                     drift(p.accent, l: 0.12), drift(p.accent), drift(p.accent, l: -0.1)]
+            if chance(0.5) { bands.reverse() }
+        }
+        let width = d(0.035...0.06)
+        let angle = (chance(0.5) ? -30 : -150) + jit(12)
+        let inner = bands.count - 1
+        // First and last colours are the two big fields; the rest are stripes across the middle.
+        let through: Vec2 = [0.5 + jit(0.08), 0.5 + jit(0.08)]
+        var stops: [RampStop] = []
+        let start = -width * Double(inner - 1) / 2
+        for (i, c) in bands.enumerated() {
+            stops.append(RampStop(i == 0 ? -10 : start + width * Double(i - 1), c))
+        }
+        let stripes = Layer(name: "Stripes",
+                            shape: .line(through: through, angle: angle, bend: chance(0.3) ? d(-0.15...0.15) : 0),
+                            spread: 1,
+                            ramp: stops,
+                            stepped: true)
+        var w = Wallpaper(background: .solid(bands[0]), layers: [stripes],
+                          effects: effects(vignette: 0, warp: 0, aberration: 0))
+        w.effects.grain = Grain(intensity: d(0.0...0.025), size: 1, chroma: 0.1, shadowBias: 0)
+        return w
+    }
+
+    // MARK: Swatches
+
+    mutating func swatches() -> Wallpaper {
+        // A palette card: flat ground, a row (or column) of rounded swatches.
+        let card = chance(0.5) ? drift(p.deep, l: 0.02) : drift(p.highlight, l: -0.02)
+        let count = rng.int(in: 5...7)
+        var colors: [RGBA]
+        if chance(0.5) {
+            // Tints of one hue.
+            let hue = rng.pick([p.accent, p.secondary, p.base]).oklch.h + jit(10)
+            let light = card.luminance > 0.5
+            colors = (0..<count).map { i in
+                let u = Double(i) / Double(count - 1)
+                let l = light ? 0.9 - u * 0.62 : 0.32 + u * 0.6
+                return RGBA(l: l, c: 0.12 + 0.06 * sin(u * .pi), h: hue + u * jit(20))
+            }
+        } else {
+            let seq = [p.highlight, p.secondary, p.accent, p.base, p.baseAlt, p.deep, p.accent.adjusted(hue: 40)]
+            colors = Array(seq.prefix(count)).map { drift($0) }
+        }
+        let vertical = chance(0.5)
+        let gap = d(0.02...0.035)
+        let span = d(0.7...0.86)                      // fraction of the canvas width the row spans
+        let corner = d(0.012...0.03)
+        var layers: [Layer] = []
+        if vertical {
+            let w = (span - gap * Double(count - 1)) / Double(count)
+            let h = d(0.42...0.6)
+            for (i, c) in colors.enumerated() {
+                let x = 0.5 - span / 2 + w / 2 + Double(i) * (w + gap)
+                layers.append(Layer(name: "Swatch \(i + 1)",
+                                    shape: .rect(center: [x, 0.5], size: [widthUnits(w), heightUnits(h)], rotation: 0, cornerRadius: corner),
+                                    spread: 0.003, ramp: [RampStop(-1, c), RampStop(0, c), RampStop(1, c.with(alpha: 0))], smoothing: 0))
+            }
+        } else {
+            let h = (0.72 - gap * Double(count - 1)) / Double(count)
+            let w = d(0.28...0.4)
+            for (i, c) in colors.enumerated() {
+                let y = 0.5 - 0.72 / 2 + h / 2 + Double(i) * (h + gap)
+                layers.append(Layer(name: "Swatch \(i + 1)",
+                                    shape: .rect(center: [0.5, y], size: [widthUnits(w), heightUnits(h)], rotation: 0, cornerRadius: corner),
+                                    spread: 0.003, ramp: [RampStop(-1, c), RampStop(0, c), RampStop(1, c.with(alpha: 0))], smoothing: 0))
+            }
+        }
+        var w = Wallpaper(background: .solid(card), layers: layers, effects: effects(vignette: 0, warp: 0, aberration: 0))
+        w.effects.grain = Grain(intensity: d(0.0...0.02), size: 1, chroma: 0, shadowBias: 0)
+        return w
+    }
+
+    // MARK: Chevron
+
+    mutating func chevron() -> Wallpaper {
+        // Colour underneath, lit ridges on top.
+        let sweepPresets = GradientPreset.defaults.filter { $0.name.hasSuffix("Sweep") }
+        let angle = -35 + jit(12)
+        let background: Background = chance(0.5)
+            ? rng.pick(sweepPresets).background()
+            : .linear([drift(p.deep), drift(p.accent), drift(p.secondary), drift(p.highlight, l: -0.1)], angle: angle + 90 + jit(30), smoothing: 0.3)
+        let period = d(0.12...0.2)
+        let grey = RGBA(r: 0.5, g: 0.5, b: 0.5)
+        let ridges = Layer(name: "Chevrons",
+                           shape: .chevrons(through: [0.5, 0.5], angle: angle, period: period, width: period,
+                                            amplitude: period * d(0.25...0.45), wavelength: period * d(2.5...4)),
+                           spread: period * 0.5,
+                           ramp: [RampStop(-1, grey), RampStop(0, grey.adjusted(lightness: -0.25))],
+                           blend: .overlay,
+                           relief: Relief(height: period * d(0.3...0.5), profile: .dome, lightAngle: angle - 90 + jit(30),
+                                          lightElevation: d(30...50), gloss: d(0.5...0.9), shininess: d(24...64), ambient: 0.25))
+        var w = Wallpaper(background: background, layers: [ridges],
+                          effects: effects(vignette: d(0.1...0.3), warp: 0, aberration: chance(0.5) ? d(0.5...1.5) : 0))
+        w.effects.grain.intensity = d(0.03...0.06)
+        return w
+    }
+
+    // MARK: Keycaps
+
+    mutating func keycaps() -> Wallpaper {
+        let deep = drift(p.deep, l: 0.01)
+        let base = deep.adjusted(lightness: 0.22)
+        let cell = d(0.1...0.16)
+        let tiles = Layer(name: "Keycaps",
+                          shape: .tiles(center: [0.5, 0.5], cell: [cell * d(1.2...1.6), cell], inset: cell * 0.06,
+                                        cornerRadius: cell * d(0.15...0.25), rotation: d(-15...15), stagger: chance(0.7) ? 0.5 : 0),
+                          spread: cell * 0.35,
+                          ramp: [RampStop(-1, base.adjusted(lightness: 0.05)), RampStop(-0.2, base), RampStop(0, base.adjusted(lightness: -0.05)), RampStop(0.12, deep)],
+                          relief: Relief(height: cell * 0.35, profile: .bevel, lightAngle: d(-150...(-30)), lightElevation: d(35...55),
+                                         gloss: d(0.6...1.0), shininess: d(24...60), ambient: 0.35))
+        // A soft light sweep and a faint iridescent band, both screened over the tiles.
+        let sweep = Layer(name: "Light sweep",
+                          shape: .wave(through: [0.5 + jit(0.2), 0.5 + jit(0.2)], angle: d(0...360), amplitude: d(0.05...0.15), wavelength: d(1...2), phase: d(0...360)),
+                          spread: d(0.3...0.5),
+                          ramp: [RampStop(-1.2, RGBA.white.with(alpha: 0)), RampStop(0, RGBA.white.with(alpha: d(0.4...0.6))), RampStop(1.2, RGBA.white.with(alpha: 0))],
+                          blend: .screen, smoothing: 1)
+        let sheen = Layer(name: "Sheen",
+                          shape: .line(through: [d(0.2...0.8), d(0.2...0.8)], angle: d(0...360), bend: d(-0.3...0.3)),
+                          spread: d(0.2...0.35),
+                          ramp: [RampStop(-1, p.accent.with(alpha: 0)), RampStop(0, p.accent.with(alpha: d(0.15...0.35))), RampStop(1, p.accent.with(alpha: 0))],
+                          blend: .screen, hueSweep: d(120...240))
+        var w = Wallpaper(background: .solid(deep), layers: [sweep, sheen, tiles],
+                          effects: effects(vignette: d(0.2...0.4), warp: d(0.01...0.03), aberration: chance(0.4) ? d(0.5...1.2) : 0))
+        w.effects.warp.scale = d(0.5...0.9)
+        w.effects.grain.intensity = d(0.03...0.06)
+        return w
+    }
+
+    // MARK: Liquid
+
+    mutating func liquid() -> Wallpaper {
+        let deep = drift(p.deep)
+        let accent = drift(p.accent)
+        let secondary = drift(p.secondary)
+        let highlight = drift(p.highlight)
+        let black = chance(0.7)
+        let background: Background = black ? .solid(RGBA(hex: "#050505")!) : .linear([deep, drift(p.base)], angle: d(0...360))
+        let cx = 0.5 + jit(0.15), cy = d(0.5...0.85)
+        let radius = d(0.45...0.7)
+        let blob = Layer(name: "Liquid",
+                         shape: .blob(center: [cx, cy], radius: radius, lobes: rng.int(in: 2...4), wobble: d(0.12...0.3), rotation: d(0...360)),
+                         spread: radius * d(0.5...0.8),
+                         ramp: [
+                             RampStop(-1.6, deep.mixed(with: secondary, 0.4)),
+                             RampStop(-0.8, secondary),
+                             RampStop(-0.3, accent),
+                             RampStop(-0.06, highlight.mixed(with: accent, 0.4)),
+                             RampStop(0.0, highlight),
+                             RampStop(0.015, highlight.with(alpha: 0)),
+                         ],
+                         smoothing: 0.6,
+                         hueSweep: d(-30...30),
+                         relief: Relief(height: radius * d(0.25...0.5), profile: .dome, lightAngle: d(-160...(-20)),
+                                        lightElevation: d(30...55), gloss: d(0.6...1), shininess: d(20...60), ambient: 0.3))
+        var w = Wallpaper(background: background, layers: [blob],
+                          effects: effects(vignette: 0, warp: d(0.02...0.06), aberration: chance(0.5) ? d(0.5...1.5) : 0))
+        // Folds: a few strong liquify strokes across the blob.
+        let strokes = rng.int(in: 2...4)
+        for _ in 0..<strokes {
+            let from: Vec2 = [cx + jit(radius * 0.8), cy + jit(radius * 0.6)]
+            let dir = d(0...(2 * .pi))
+            let len = d(0.15...0.4)
+            let steps = 8
+            for k in 0..<steps {
+                let u = Double(k) / Double(steps)
+                let pos: Vec2 = [from.x + cos(dir) * len * u, from.y + sin(dir) * len * u]
+                w.effects.smears.append(Smear(kind: .push, position: pos,
+                                              vector: [cos(dir) * len / Double(steps) * 3, sin(dir) * len / Double(steps) * 3],
+                                              radius: d(0.15...0.3), strength: 0.9))
+            }
+        }
+        w.effects.grain.intensity = d(0.03...0.06)
+        return w
+    }
+
+    // MARK: Classic
+
+    mutating func classic() -> Wallpaper {
+        let dark = chance(0.7)
+        let angle = (chance(0.5) ? -40 : 140) + jit(20)
+        let stops: [RGBA] = dark
+            ? (chance(0.5) ? [drift(p.accent), drift(p.secondary), drift(p.deep)] : [drift(p.accent), drift(p.deep)])
+            : [drift(p.highlight), drift(p.secondary), drift(p.accent)]
+        var w = Wallpaper(background: .linear(stops, angle: angle, smoothing: d(0.2...0.6)),
+                          effects: effects(vignette: d(0...0.15), warp: 0, aberration: 0))
+        w.effects.grain.intensity = d(0.05...0.09)
+        return w
+    }
+
+    // MARK: Glow
+
+    mutating func glow() -> Wallpaper {
+        let deep = drift(p.deep, l: 0.005)
+        let accent = drift(p.accent)
+        let secondary = drift(p.secondary)
+        let highlight = drift(p.highlight)
+        let background = Background.linear([deep, deep.mixed(with: secondary, 0.25)], angle: 90, smoothing: 0.5)
+        let radius = d(0.9...1.4)
+        let top = d(0.35...0.55)
+        let planet = Layer(name: "Horizon",
+                           shape: .circle(center: [0.5 + jit(0.1), top + radius * minSideOverHeight], radius: radius),
+                           spread: d(0.25...0.4),
+                           ramp: [
+                               RampStop(-2.0, deep.mixed(with: accent, 0.3)),
+                               RampStop(-0.8, accent.adjusted(lightness: -0.15)),
+                               RampStop(-0.15, accent),
+                               RampStop(-0.02, highlight.mixed(with: accent, 0.3)),
+                               RampStop(0.0, highlight),
+                               RampStop(0.08, accent.with(alpha: 0.5)),
+                               RampStop(0.5, secondary.with(alpha: 0)),
+                           ],
+                           smoothing: 1,
+                           lighting: Lighting(angle: -90 + jit(20), amount: d(0.3...0.85)))
+        var w = Wallpaper(background: background, layers: [planet],
+                          effects: effects(vignette: d(0.1...0.3), warp: 0, aberration: chance(0.4) ? d(0.5...1.5) : 0))
+        w.effects.grain.intensity = d(0.05...0.09)
         return w
     }
 }

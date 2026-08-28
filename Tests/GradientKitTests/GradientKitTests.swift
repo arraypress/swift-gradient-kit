@@ -71,8 +71,8 @@ struct ModelTests {
     @Test("GPU layouts match the shader's expectations")
     func layouts() {
         #expect(MemoryLayout<GPUStop>.stride == 32)
-        #expect(MemoryLayout<GPULayer>.stride == 96)
-        #expect(MemoryLayout<GPUGlobals>.stride == 144)
+        #expect(MemoryLayout<GPULayer>.stride == 144)
+        #expect(MemoryLayout<GPUGlobals>.stride == 160)
     }
 }
 
@@ -219,5 +219,89 @@ struct RendererEdgeTests {
         #expect(throws: RenderError.self) {
             _ = try r.render(Wallpaper(background: .solid(.black)), width: r.maxSide + 1, height: 10)
         }
+    }
+}
+
+@Suite("New shapes & features")
+struct ShapeFeatureTests {
+    private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: Int) {
+        let data = image.dataProvider!.data! as Data
+        let i = y * image.bytesPerRow + x * 4
+        return (Int(data[i]), Int(data[i + 1]), Int(data[i + 2]))
+    }
+
+    @Test("Every shape kind renders and converts to every other kind")
+    func kinds() throws {
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .solid(.black))
+        w.effects.grain = .none
+        for kind in Shape.Kind.allCases {
+            let shape = Shape.circle(center: [0.5, 0.5], radius: 0.25).converted(to: kind)
+            #expect(shape.kind == kind)
+            w.layers = [Layer(shape: shape, spread: 0.05, ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))])]
+            _ = try r.render(w, width: 64, height: 36)
+            for other in Shape.Kind.allCases { #expect(shape.converted(to: other).kind == other) }
+        }
+    }
+
+    @Test("A polygon and a rect paint their centres, stripes alternate, repeat folds")
+    func geometry() throws {
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .solid(.black))
+        w.effects.grain = .none
+        let solid = [RampStop(-1, RGBA.white), RampStop(0, .white), RampStop(0.001, RGBA.white.with(alpha: 0))]
+        w.layers = [Layer(shape: .polygon(center: [0.5, 0.5], radius: 0.3, sides: 6, rotation: 0, rounding: 0.02), spread: 0.01, ramp: solid)]
+        var img = try r.render(w, width: 200, height: 100)
+        #expect(pixel(img, 100, 50).r > 250)
+        #expect(pixel(img, 2, 2).r < 3)
+        w.layers = [Layer(shape: .rect(center: [0.5, 0.5], size: [0.4, 0.2], rotation: 0, cornerRadius: 0.05), spread: 0.01, ramp: solid)]
+        img = try r.render(w, width: 200, height: 100)
+        #expect(pixel(img, 100, 50).r > 250 && pixel(img, 100, 5).r < 3)
+        // Stripes every 0.2 (min-side units = 20 px), 10 px wide, along y.
+        w.layers = [Layer(shape: .stripes(through: [0.5, 0.5], angle: 90, period: 0.2, width: 0.1, bend: 0), spread: 0.005, ramp: solid)]
+        img = try r.render(w, width: 100, height: 100)
+        #expect(pixel(img, 50, 50).r > 250)   // on a stripe centre
+        #expect(pixel(img, 50, 60).r < 3)     // between stripes
+        // Concentric rings via repeat: a circle of radius 0.2 with period 0.1 spread.
+        w.layers = [Layer(shape: .circle(center: [0.5, 0.5], radius: 0.2), spread: 0.1,
+                          ramp: [RampStop(-0.5, RGBA.white.with(alpha: 0)), RampStop(-0.2, RGBA.white.with(alpha: 0)), RampStop(-0.05, .white),
+                                 RampStop(0.05, .white), RampStop(0.2, RGBA.white.with(alpha: 0)), RampStop(0.5, RGBA.white.with(alpha: 0))],
+                          repeatPeriod: 1)]
+        img = try r.render(w, width: 100, height: 100)
+        #expect(pixel(img, 70, 50).r > 250)   // d = 0 (radius 0.2 → 20 px from centre)
+        #expect(pixel(img, 80, 50).r > 250)   // d = 0.1 → folded to 0 again
+        #expect(pixel(img, 75, 50).r < 3)     // half-way between rings
+    }
+
+    @Test("Mesh background blends its corner colours")
+    func mesh() throws {
+        let r = try WallpaperRenderer()
+        var w = Wallpaper(background: .mesh([RGBA(r: 1, g: 0, b: 0), RGBA(r: 0, g: 0, b: 1),
+                                             RGBA(r: 0, g: 1, b: 0), RGBA(r: 1, g: 1, b: 1)], columns: 2, smoothing: 0))
+        w.effects.grain = .none
+        let img = try r.render(w, width: 100, height: 100)
+        // A 1% OKLab mix towards a neighbour lifts a zero channel to ~30/255 after sRGB encoding.
+        #expect(pixel(img, 1, 1).r > 240 && pixel(img, 1, 1).b < 60)      // top-left red
+        #expect(pixel(img, 98, 1).b > 240 && pixel(img, 98, 1).r < 60)    // top-right blue
+        #expect(pixel(img, 1, 98).g > 240 && pixel(img, 1, 98).r < 60)    // bottom-left green
+        let mid = pixel(img, 50, 50)
+        #expect(mid.r > 60 && mid.g > 60 && mid.b > 60)                   // a blend, not any corner
+        let back = try Wallpaper(jsonData: try w.jsonData())
+        #expect(back.background.meshColumns == 2 && back.background.meshRows == 2)
+    }
+
+    @Test("Older scene JSON without the new fields still decodes")
+    func legacyJSON() throws {
+        let json = """
+        {"background":{"kind":"solid","stops":[{"position":0,"color":{"r":0,"g":0,"b":0,"a":1}}],"angle":90,"center":[0.5,0.5],"radius":0.8,"smoothing":0.5},
+         "layers":[{"id":"3B1F1C1E-0000-4000-8000-000000000001","name":"x","shape":{"circle":{"center":[0.5,0.5],"radius":0.2}},"spread":0.3,
+                    "ramp":[{"position":0,"color":{"r":1,"g":1,"b":1,"a":1}}],"blend":"normal","opacity":1,"smoothing":1,
+                    "distortion":{"amount":0,"scale":2,"octaves":3},"lighting":{"angle":-90,"amount":0},"isEnabled":true}],
+         "effects":{"grain":{"intensity":0.06,"size":1.5,"chroma":0.25,"shadowBias":0.3},"vignette":{"intensity":0,"radius":0.6,"softness":0.6},
+                    "warp":{"amount":0,"scale":1.2,"octaves":2},"aberration":0,"tone":{"exposure":0,"contrast":1,"saturation":1,"hueShift":0}},
+         "seed":1,"title":"legacy"}
+        """
+        let w = try Wallpaper(jsonData: Data(json.utf8))
+        #expect(w.layers.count == 1 && w.layers[0].repeatPeriod == 0 && w.palette == nil && w.background.meshColumns == 2)
     }
 }

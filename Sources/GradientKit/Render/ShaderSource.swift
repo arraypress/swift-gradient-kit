@@ -25,12 +25,20 @@ enum ShaderSource {
         float  pad0, pad1, pad2;
     };
 
+    struct SmearData {
+        float4 posVec;   // px, py, vx, vy
+        float4 params;   // radius, strength, kind, 0
+    };
+
     struct LayerData {
         float4 p0;   // circle/ring/ellipse/crescent: cx, cy, r (or rx), r2/ry/thickness
         float4 p1;   // line/wave: angle, bend, amplitude, wavelength | ellipse: rotation | crescent: cut cx, cy
         float4 p2;   // phase, distortAmount, distortScale, distortOctaves
         float4 p3;   // spread, opacity, litAngle, litAmount
-        float4 p4;   // smoothing, seed, 0, 0
+        float4 p4;   // smoothing, seed, repeatPeriod, hueSweep(rad per t)
+        float4 p5;   // chevrons: amplitude, wavelength | tiles: inset, cornerRadius, stagger (xyz)
+        float4 p6;   // relief: height, profile, lightAz(rad), lightEl(rad)
+        float4 p7;   // relief gloss, shininess, ambient, stepped(0/1)
         int kind; int blend; int stopOffset; int stopCount;
     };
 
@@ -43,11 +51,16 @@ enum ShaderSource {
         float4 grain;            // intensity, size, chroma, shadowBias
         float4 vignette;         // intensity, radius, softness, unused
         float4 tone;             // exposure, contrast, saturation, hueShift(rad)
-        float4 misc;             // aberration px, ditherStep, 0, 0
+        float4 misc;             // aberration px, ditherStep, smearCount, 0
+        float4 bgMesh;           // columns, rows, stepped, aaWidth(t units)
     };
 
-    constant int KIND_CIRCLE = 0, KIND_ELLIPSE = 1, KIND_LINE = 2, KIND_RING = 3, KIND_CRESCENT = 4, KIND_WAVE = 5;
-    constant int BG_SOLID = 0, BG_LINEAR = 1, BG_RADIAL = 2;
+    constant int KIND_CIRCLE = 0, KIND_ELLIPSE = 1, KIND_LINE = 2, KIND_RING = 3, KIND_CRESCENT = 4, KIND_WAVE = 5,
+                 KIND_POLYGON = 6, KIND_RECT = 7, KIND_CAPSULE = 8, KIND_STRIPES = 9, KIND_BLOB = 10, KIND_NOISE = 11,
+                 KIND_CHEVRONS = 12, KIND_TILES = 13;
+    constant int BG_SOLID = 0, BG_LINEAR = 1, BG_RADIAL = 2, BG_MESH = 3;
+
+    inline float floorMod(float x, float y) { return x - y * floor(x / y); }
 
     // ---------------------------------------------------------------- hash & noise
 
@@ -142,8 +155,9 @@ enum ShaderSource {
         return select(hi, lo, c <= 0.0031308);
     }
 
-    // Ramp lookup in OKLab; returns (L, a, b, alpha).
-    float4 evalRamp(constant Stop* stops, int offset, int count, float t, float smoothing) {
+    // Ramp lookup in OKLab; returns (L, a, b, alpha). `stepped` holds each
+    // stop's colour until the next (hard bands, anti-aliased over `aa`).
+    float4 evalRamp(constant Stop* stops, int offset, int count, float t, float smoothing, bool stepped, float aa) {
         if (count <= 0) return float4(0.0);
         Stop first = stops[offset];
         if (count == 1 || t <= first.position) return first.lab;
@@ -153,6 +167,10 @@ enum ShaderSource {
             Stop b = stops[offset + i];
             if (t <= b.position) {
                 Stop a = stops[offset + i - 1];
+                if (stepped) {
+                    float u = smoothstep(b.position - max(aa, 1e-6), b.position, t);
+                    return mix(a.lab, b.lab, u);
+                }
                 float u = (t - a.position) / max(b.position - a.position, 1e-6);
                 u = mix(u, u * u * (3.0 - 2.0 * u), smoothing);
                 return mix(a.lab, b.lab, u);
@@ -203,7 +221,8 @@ enum ShaderSource {
                 return max(d1, -d2);
             }
             case KIND_LINE:
-            case KIND_WAVE: {
+            case KIND_WAVE:
+            case KIND_STRIPES: {
                 float a = L.p1.x;
                 float2 n = float2(cos(a), sin(a));
                 float2 tdir = float2(-n.y, n.x);
@@ -211,20 +230,140 @@ enum ShaderSource {
                 float d = dot(rel, n);
                 if (L.kind == KIND_LINE) {
                     d += L.p1.y * along * along;
-                } else {
+                } else if (L.kind == KIND_WAVE) {
                     float wl = max(L.p1.w, 1e-3);
                     d += L.p1.z * sin(along * 6.28318530718 / wl + L.p2.x);
+                } else {
+                    d += L.p1.y * along * along;
+                    float period = max(L.p1.z, 1e-3);
+                    float m = d - period * floor(d / period + 0.5);   // distance to nearest stripe centre
+                    d = abs(m) - L.p1.w * 0.5;
                 }
                 return d;
+            }
+            case KIND_POLYGON: {
+                // Regular n-gon (Quilez), inset by the rounding then re-expanded.
+                float rot = L.p1.x;
+                float cs = cos(rot), sn = sin(rot);
+                float2 p = float2(rel.x * cs + rel.y * sn, -rel.x * sn + rel.y * cs);
+                float n = max(L.p1.y, 3.0);
+                float rounding = min(L.p0.w, L.p0.z * 0.9);
+                float r = max(L.p0.z - rounding, 1e-4);
+                float an = 3.14159265 / n;
+                float2 acs = float2(cos(an), sin(an));
+                float bn = floorMod(atan2(p.x, p.y) + an, 2.0 * an) - an;
+                float2 q2 = length(p) * float2(cos(bn), abs(sin(bn)));
+                q2 -= r * acs;
+                q2.y += clamp(-q2.y, 0.0, r * acs.y);
+                return length(q2) * sign(q2.x) - rounding;
+            }
+            case KIND_RECT: {
+                float rot = L.p1.x;
+                float cs = cos(rot), sn = sin(rot);
+                float2 p = float2(rel.x * cs + rel.y * sn, -rel.x * sn + rel.y * cs);
+                float2 halfSize = max(L.p0.zw * 0.5, 1e-4);
+                float cr = min(L.p1.y, min(halfSize.x, halfSize.y));
+                float2 d2 = abs(p) - (halfSize - cr);
+                return length(max(d2, 0.0)) + min(max(d2.x, d2.y), 0.0) - cr;
+            }
+            case KIND_CAPSULE: {
+                float2 a = L.p0.xy, b = L.p0.zw;
+                float2 pa = q - a, ba = b - a;
+                float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+                return length(pa - ba * h) - L.p1.x;
+            }
+            case KIND_BLOB: {
+                float theta = atan2(rel.y, rel.x);
+                float rr = L.p0.z * (1.0 + L.p0.w * sin(L.p1.y * theta + L.p1.x));
+                return length(rel) - rr;
+            }
+            case KIND_NOISE: {
+                float2 np = (q - c) * L.p1.x + float2(L.p4.y * 0.13, -L.p4.y * 0.07);
+                return fbm(np, int(L.p1.y));
+            }
+            case KIND_CHEVRONS: {
+                float a = L.p1.x;
+                float2 n = float2(cos(a), sin(a));
+                float2 tdir = float2(-n.y, n.x);
+                float along = dot(rel, tdir);
+                float wl = max(L.p5.y, 1e-3);
+                float tri = abs(2.0 * (along / wl - floor(along / wl + 0.5)));   // 0…1 triangle wave
+                float d = dot(rel, n) + L.p5.x * (tri - 0.5) * 2.0;
+                float period = max(L.p1.z, 1e-3);
+                float m = d - period * floor(d / period + 0.5);
+                return abs(m) - L.p1.w * 0.5;
+            }
+            case KIND_TILES: {
+                float rot = L.p1.x;
+                float cs = cos(rot), sn = sin(rot);
+                float2 p = float2(rel.x * cs + rel.y * sn, -rel.x * sn + rel.y * cs);
+                float2 cell = max(L.p0.zw, 1e-3);
+                float row = floor(p.y / cell.y + 0.5);
+                p.x += L.p5.z * cell.x * row;                       // stagger alternate rows
+                float2 local = p - cell * floor(p / cell + 0.5);     // centred in its cell
+                float2 halfSize = cell * 0.5 - L.p5.x;
+                float cr = min(L.p5.y, min(halfSize.x, halfSize.y));
+                float2 d2 = abs(local) - (halfSize - cr);
+                return length(max(d2, 0.0)) + min(max(d2.x, d2.y), 0.0) - cr;
             }
         }
         return 1e9;
     }
 
+    // Distance including the layer's own noise distortion.
+    float layerField(constant LayerData& L, float2 q) {
+        float d = layerDistance(L, q);
+        if (L.p2.y != 0.0) {
+            float2 np = q * L.p2.z + float2(L.p4.y * 0.61, L.p4.y * 0.29);
+            d += fbm(np, int(L.p2.w)) * L.p2.y;
+        }
+        return d;
+    }
+
+    // Height above the surface for a relief layer, from signed distance.
+    inline float reliefHeight(constant LayerData& L, float d) {
+        float x = clamp(-d / max(L.p3.x, 1e-5), 0.0, 1.0);
+        int profile = int(L.p6.y);
+        float h;
+        if (profile == 0)      h = sqrt(max(0.0, 1.0 - (1.0 - x) * (1.0 - x)));   // dome
+        else if (profile == 1) h = x * x * (3.0 - 2.0 * x);                        // bevel
+        else                   h = x;                                              // slope
+        return h * L.p6.x;
+    }
+
     // ---------------------------------------------------------------- scene
 
-    float3 shade(float2 pix, constant Globals& g, constant LayerData* layers, constant Stop* stops) {
+    // Liquify: walk strokes newest-first, each displacing the sampling point.
+    float2 applySmears(float2 q, constant Globals& g, constant SmearData* smears) {
+        int n = int(g.misc.z);
+        for (int i = 0; i < n; i++) {
+            constant SmearData& S = smears[i];
+            float2 rel = q - S.posVec.xy;
+            float r = max(S.params.x, 1e-4);
+            float d = length(rel) / r;
+            if (d >= 1.0) continue;
+            float w = 1.0 - d * d;
+            w = w * w * S.params.y;                       // smooth bump, zero at the rim
+            int kind = int(S.params.z);
+            if (kind == 0) {                              // push: sample from behind the drag
+                q -= S.posVec.zw * w;
+            } else if (kind == 1) {                       // swirl
+                float ang = (S.posVec.z + S.posVec.w) * 6.28318 * w;
+                float cs = cos(ang), sn = sin(ang);
+                q = S.posVec.xy + float2(rel.x * cs - rel.y * sn, rel.x * sn + rel.y * cs);
+            } else if (kind == 2) {                       // pinch: pull outward samples in
+                q = S.posVec.xy + rel * (1.0 + length(S.posVec.zw) * w);
+            } else {                                      // bloat
+                q = S.posVec.xy + rel * (1.0 - min(length(S.posVec.zw) * w, 0.9));
+            }
+        }
+        return q;
+    }
+
+    float3 shade(float2 pix, constant Globals& g, constant LayerData* layers, constant Stop* stops, constant SmearData* smears) {
         float2 q = (pix - g.size * 0.5) / g.minSide;
+
+        if (g.misc.z > 0.0) q = applySmears(q, g, smears);
 
         if (g.warp.x > 0.0) {
             int oct = int(g.warp.z);
@@ -245,32 +384,72 @@ enum ShaderSource {
             } else if (g.bgKind == BG_RADIAL) {
                 t = length(q - g.bgCenterRadius.xy) / max(g.bgCenterRadius.z, 1e-4);
             }
-            float4 lab = evalRamp(stops, g.bgStopOffset, g.bgStopCount, t, g.bgCenterRadius.w);
-            col = oklabToLinear(lab.xyz);
+            if (g.bgKind == BG_MESH) {
+                // Bilinear (eased) blend of a colour grid across the warped canvas.
+                int cols = max(int(g.bgMesh.x), 1), rows = max(int(g.bgMesh.y), 1);
+                float2 uv = clamp(q * g.minSide * g.invSize + 0.5, 0.0, 1.0);
+                float fx = uv.x * float(cols - 1), fy = uv.y * float(rows - 1);
+                int x0 = int(floor(fx)), y0 = int(floor(fy));
+                int x1 = min(x0 + 1, cols - 1), y1 = min(y0 + 1, rows - 1);
+                x0 = min(x0, cols - 1); y0 = min(y0, rows - 1);
+                float ux = fx - floor(fx), uy = fy - floor(fy);
+                ux = mix(ux, ux * ux * (3.0 - 2.0 * ux), g.bgCenterRadius.w);
+                uy = mix(uy, uy * uy * (3.0 - 2.0 * uy), g.bgCenterRadius.w);
+                int n = g.bgStopCount;
+                float4 c00 = stops[g.bgStopOffset + min(y0 * cols + x0, n - 1)].lab;
+                float4 c10 = stops[g.bgStopOffset + min(y0 * cols + x1, n - 1)].lab;
+                float4 c01 = stops[g.bgStopOffset + min(y1 * cols + x0, n - 1)].lab;
+                float4 c11 = stops[g.bgStopOffset + min(y1 * cols + x1, n - 1)].lab;
+                float4 lab = mix(mix(c00, c10, ux), mix(c01, c11, ux), uy);
+                col = oklabToLinear(lab.xyz);
+            } else {
+                float4 lab = evalRamp(stops, g.bgStopOffset, g.bgStopCount, t, g.bgCenterRadius.w, g.bgMesh.z > 0.5, g.bgMesh.w);
+                col = oklabToLinear(lab.xyz);
+            }
         }
 
         // Layers
         for (int i = 0; i < g.layerCount; i++) {
             constant LayerData& L = layers[i];
-            float d = layerDistance(L, q);
-            if (L.p2.y != 0.0) {
-                float2 np = q * L.p2.z + float2(L.p4.y * 0.61, L.p4.y * 0.29);
-                d += fbm(np, int(L.p2.w)) * L.p2.y;
-            }
+            float d = layerField(L, q);
             float t = d / max(L.p3.x, 1e-5);
-            float4 lab = evalRamp(stops, L.stopOffset, L.stopCount, t, L.p4.x);
+            if (L.p4.z > 0.0) {
+                float period = L.p4.z;
+                t = t - period * floor(t / period + 0.5);   // fold into ±period/2
+            }
+            float aa = 1.5 / (g.minSide * max(L.p3.x, 1e-5));
+            float4 lab = evalRamp(stops, L.stopOffset, L.stopCount, t, L.p4.x, L.p7.w > 0.5, aa);
+            if (L.p4.w != 0.0) {
+                float ang = L.p4.w * t;
+                float cs = cos(ang), sn = sin(ang);
+                lab.yz = float2(lab.y * cs - lab.z * sn, lab.y * sn + lab.z * cs);
+            }
             float alpha = lab.w * L.p3.y;
-            if (L.p3.w != 0.0 && L.kind != KIND_LINE && L.kind != KIND_WAVE) {
+            if (L.p3.w != 0.0 && L.kind != KIND_LINE && L.kind != KIND_WAVE && L.kind != KIND_STRIPES && L.kind != KIND_NOISE) {
                 // One-sided light: a linear gradient across the shape's own
                 // radius (no singularity at the centre), eased at both ends.
                 float2 dir = float2(cos(L.p3.z), sin(L.p3.z));
-                float R = max(L.kind == KIND_ELLIPSE ? max(L.p0.z, L.p0.w) : L.p0.z, 1e-3);
+                float R = max((L.kind == KIND_ELLIPSE || L.kind == KIND_RECT) ? max(L.p0.z, L.p0.w) : (L.kind == KIND_CAPSULE ? L.p1.x : L.p0.z), 1e-3);
                 float facing = clamp(dot(q - L.p0.xy, dir) / R * 0.5 + 0.5, 0.0, 1.0);
                 facing = smoothstep(0.15, 0.9, facing);
                 alpha *= mix(1.0, facing, L.p3.w);
             }
             if (alpha <= 0.0) continue;
             float3 src = oklabToLinear(lab.xyz);
+            if (L.p6.x > 0.0) {
+                // Relief: slope of the height field → normal → directional light + specular.
+                float eps = 1.5 / g.minSide;
+                float h0 = reliefHeight(L, d);
+                float hx = reliefHeight(L, layerField(L, q + float2(eps, 0.0)));
+                float hy = reliefHeight(L, layerField(L, q + float2(0.0, eps)));
+                float3 nrm = normalize(float3(-(hx - h0) / eps, -(hy - h0) / eps, 1.0));
+                float az = L.p6.z, el = L.p6.w;
+                float3 Ld = float3(cos(az) * cos(el), sin(az) * cos(el), sin(el));
+                float diffuse = mix(L.p7.z, 1.0, max(dot(nrm, Ld), 0.0));
+                float3 H = normalize(Ld + float3(0.0, 0.0, 1.0));
+                float spec = L.p7.x * pow(max(dot(nrm, H), 0.0), max(L.p7.y, 1.0));
+                src = src * diffuse + spec;
+            }
             float3 blended = blendMode(L.blend, col, src);
             col = mix(col, blended, clamp(alpha, 0.0, 1.0));
         }
@@ -281,6 +460,7 @@ enum ShaderSource {
                                       constant Globals& g [[buffer(0)]],
                                       constant LayerData* layers [[buffer(1)]],
                                       constant Stop* stops [[buffer(2)]],
+                                      constant SmearData* smears [[buffer(3)]],
                                       uint2 gid [[thread_position_in_grid]]) {
         if (gid.x >= out.get_width() || gid.y >= out.get_height()) return;
         float2 pix = float2(gid) + 0.5;
@@ -292,11 +472,11 @@ enum ShaderSource {
             float r = length(fromCenter / halfSize) / 1.41421356;   // 0 centre … 1 corner
             float2 dir = fromCenter / max(length(fromCenter), 1e-3);
             float2 off = dir * g.misc.x * r * r;
-            col.r = shade(pix + off, g, layers, stops).r;
-            col.g = shade(pix, g, layers, stops).g;
-            col.b = shade(pix - off, g, layers, stops).b;
+            col.r = shade(pix + off, g, layers, stops, smears).r;
+            col.g = shade(pix, g, layers, stops, smears).g;
+            col.b = shade(pix - off, g, layers, stops, smears).b;
         } else {
-            col = shade(pix, g, layers, stops);
+            col = shade(pix, g, layers, stops, smears);
         }
 
         // Tone (linear light)

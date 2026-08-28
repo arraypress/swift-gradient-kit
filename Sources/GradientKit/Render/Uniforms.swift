@@ -18,12 +18,20 @@ struct GPUStop {
     var pad2: Float = 0
 }
 
+struct GPUSmear {
+    var posVec: SIMD4<Float>     // px, py (scene units), vx, vy (scene units)
+    var params: SIMD4<Float>     // radius, strength, kind, 0
+}
+
 struct GPULayer {
     var p0: SIMD4<Float> = .zero
     var p1: SIMD4<Float> = .zero
     var p2: SIMD4<Float> = .zero
     var p3: SIMD4<Float> = .zero
     var p4: SIMD4<Float> = .zero
+    var p5: SIMD4<Float> = .zero
+    var p6: SIMD4<Float> = .zero
+    var p7: SIMD4<Float> = .zero
     var kind: Int32 = 0
     var blend: Int32 = 0
     var stopOffset: Int32 = 0
@@ -47,6 +55,7 @@ struct GPUGlobals {
     var vignette: SIMD4<Float> = .zero
     var tone: SIMD4<Float> = .zero
     var misc: SIMD4<Float> = .zero
+    var bgMesh: SIMD4<Float> = .zero
 }
 
 /// The scene flattened into the three buffers the kernel reads.
@@ -54,6 +63,7 @@ struct GPUScene {
     var globals: GPUGlobals
     var layers: [GPULayer]
     var stops: [GPUStop]
+    var smears: [GPUSmear]
 
     init(_ w: Wallpaper, width: Int, height: Int, ditherStep: Float) {
         let size = SIMD2<Float>(Float(width), Float(height))
@@ -89,8 +99,23 @@ struct GPUScene {
         case .solid: g.bgKind = 0
         case .linear: g.bgKind = 1
         case .radial: g.bgKind = 2
+        case .mesh: g.bgKind = 3
         }
-        (g.bgStopOffset, g.bgStopCount) = push(bg.kind == .solid ? Array(bg.stops.prefix(1)) : bg.stops)
+        if bg.kind == .mesh {
+            // Mesh colours keep their row-major order (push() sorts by position).
+            let cols = max(1, bg.meshColumns), rows = max(1, bg.meshRows)
+            let cells = Array(bg.stops.prefix(cols * rows))
+            g.bgStopOffset = Int32(stops.count)
+            for s in cells {
+                let lab = s.color.oklab
+                stops.append(GPUStop(lab: SIMD4<Float>(Float(lab.l), Float(lab.a), Float(lab.b), Float(s.color.a)), position: 0))
+            }
+            g.bgStopCount = Int32(cells.count)
+            g.bgMesh = SIMD4<Float>(Float(cols), Float(rows), 0, 0)
+        } else {
+            (g.bgStopOffset, g.bgStopCount) = push(bg.kind == .solid ? Array(bg.stops.prefix(1)) : bg.stops)
+            g.bgMesh = SIMD4<Float>(0, 0, bg.stepped ? 1 : 0, 1.5 / minSide)
+        }
         g.bgAngle = rad(bg.angle)
         let bc = scene(bg.center)
         g.bgCenterRadius = SIMD4<Float>(bc.x, bc.y, Float(bg.radius), Float(bg.smoothing))
@@ -129,14 +154,60 @@ struct GPUScene {
                 L.p0 = SIMD4<Float>(c.x, c.y, 0, 0)
                 L.p1 = SIMD4<Float>(rad(angle), 0, Float(amplitude), Float(wavelength))
                 L.p2.x = rad(phase)
+            case let .polygon(center, radius, sides, rotation, rounding):
+                L.kind = 6
+                let c = scene(center)
+                L.p0 = SIMD4<Float>(c.x, c.y, Float(radius), Float(rounding))
+                L.p1 = SIMD4<Float>(rad(rotation), Float(max(3, min(sides, 24))), 0, 0)
+            case let .rect(center, size, rotation, cornerRadius):
+                L.kind = 7
+                let c = scene(center)
+                L.p0 = SIMD4<Float>(c.x, c.y, Float(size.x), Float(size.y))
+                L.p1 = SIMD4<Float>(rad(rotation), Float(cornerRadius), 0, 0)
+            case let .capsule(from, to, radius):
+                L.kind = 8
+                let a = scene(from), b = scene(to)
+                L.p0 = SIMD4<Float>(a.x, a.y, b.x, b.y)
+                L.p1 = SIMD4<Float>(Float(radius), 0, 0, 0)
+            case let .stripes(through, angle, period, width, bend):
+                L.kind = 9
+                let c = scene(through)
+                L.p0 = SIMD4<Float>(c.x, c.y, 0, 0)
+                L.p1 = SIMD4<Float>(rad(angle), Float(bend), Float(period), Float(width))
+            case let .blob(center, radius, lobes, wobble, rotation):
+                L.kind = 10
+                let c = scene(center)
+                L.p0 = SIMD4<Float>(c.x, c.y, Float(radius), Float(wobble))
+                L.p1 = SIMD4<Float>(rad(rotation), Float(max(1, lobes)), 0, 0)
+            case let .noise(offset, scale, octaves):
+                L.kind = 11
+                let c = scene(offset)
+                L.p0 = SIMD4<Float>(c.x, c.y, 0, 0)
+                L.p1 = SIMD4<Float>(Float(scale), Float(max(1, min(octaves, 8))), 0, 0)
+            case let .chevrons(through, angle, period, width, amplitude, wavelength):
+                L.kind = 12
+                let c = scene(through)
+                L.p0 = SIMD4<Float>(c.x, c.y, 0, 0)
+                L.p1 = SIMD4<Float>(rad(angle), 0, Float(period), Float(width))
+                L.p5 = SIMD4<Float>(Float(amplitude), Float(wavelength), 0, 0)
+            case let .tiles(center, cell, inset, cornerRadius, rotation, stagger):
+                L.kind = 13
+                let c = scene(center)
+                L.p0 = SIMD4<Float>(c.x, c.y, Float(cell.x), Float(cell.y))
+                L.p1 = SIMD4<Float>(rad(rotation), 0, 0, 0)
+                L.p5 = SIMD4<Float>(Float(inset), Float(cornerRadius), Float(stagger), 0)
             }
+            let r = layer.relief
+            let profile: Float = r.profile == .dome ? 0 : (r.profile == .bevel ? 1 : 2)
+            L.p6 = SIMD4<Float>(Float(max(0, r.height)), profile, rad(r.lightAngle), rad(max(1, min(r.lightElevation, 89))))
+            L.p7 = SIMD4<Float>(Float(r.gloss), Float(r.shininess), Float(r.ambient), layer.stepped ? 1 : 0)
             L.p2.y = Float(layer.distortion.amount)
             L.p2.z = Float(layer.distortion.scale)
             L.p2.w = Float(max(1, min(layer.distortion.octaves, 6)))
             L.p3 = SIMD4<Float>(Float(layer.spread), Float(layer.opacity), rad(layer.lighting.angle), Float(layer.lighting.amount))
             // Per-layer noise offset derived from the layer's place in the stack + scene seed.
             let layerSeed = Float((Int(w.seed) &* 31 &+ layers.count &* 97) % 1000)
-            L.p4 = SIMD4<Float>(Float(layer.smoothing), layerSeed, 0, 0)
+            L.p4 = SIMD4<Float>(Float(layer.smoothing), layerSeed, Float(max(0, layer.repeatPeriod)), rad(layer.hueSweep))
             L.blend = Int32(BlendMode.allCases.firstIndex(of: layer.blend) ?? 0)
             (L.stopOffset, L.stopCount) = push(layer.ramp)
             layers.append(L)
@@ -155,7 +226,24 @@ struct GPUScene {
         // Aberration is specified in pixels at the corner; scale with resolution
         // relative to a 1080-high reference so previews match exports.
         let aber = Float(e.aberration) * (Float(height) / 1080)
-        g.misc = SIMD4<Float>(aber, ditherStep, 0, 0)
+
+        // Smears: stored oldest-first; the kernel walks them newest-first so
+        // each stroke deforms everything painted before it.
+        var smears: [GPUSmear] = []
+        for sm in e.smears.suffix(Effects.maxSmears).reversed() where sm.radius > 0 && sm.strength != 0 {
+            let p = scene(sm.position)
+            let kind: Float
+            switch sm.kind {
+            case .push: kind = 0
+            case .swirl: kind = 1
+            case .pinch: kind = 2
+            case .bloat: kind = 3
+            }
+            smears.append(GPUSmear(posVec: SIMD4<Float>(p.x, p.y, Float(sm.vector.x), Float(sm.vector.y)),
+                                   params: SIMD4<Float>(Float(sm.radius), Float(sm.strength), kind, 0)))
+        }
+        g.misc = SIMD4<Float>(aber, ditherStep, Float(smears.count), 0)
+        if smears.isEmpty { smears.append(GPUSmear(posVec: .zero, params: .zero)) }
 
         if stops.isEmpty {
             stops.append(GPUStop(lab: SIMD4<Float>(0, 0, 0, 1), position: 0))
@@ -167,5 +255,6 @@ struct GPUScene {
         self.globals = g
         self.layers = layers
         self.stops = stops
+        self.smears = smears
     }
 }

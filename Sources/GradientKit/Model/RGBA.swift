@@ -110,6 +110,15 @@ public struct RGBA: Codable, Sendable, Equatable, Hashable {
                     alpha: a + (other.a - a) * t)
     }
 
+    /// OKLab-blend through an ordered list of colours at `t` in 0...1.
+    public static func sample(_ colors: [RGBA], at t: Double) -> RGBA {
+        guard let first = colors.first else { return .black }
+        guard colors.count > 1 else { return first }
+        let u = min(max(t, 0), 1) * Double(colors.count - 1)
+        let i = min(Int(u), colors.count - 2)
+        return colors[i].mixed(with: colors[i + 1], u - Double(i))
+    }
+
     // MARK: Transfer functions
 
     static func decode(_ v: Double) -> Double {
