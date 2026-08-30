@@ -561,3 +561,35 @@ struct ClipTests {
         for motif in [Motif.sunset, .saturn, .rays] { _ = try r.render(Wallpaper.generate(motif, seed: 3), width: 96, height: 54) }
     }
 }
+
+@Suite("Curation")
+struct CurationTests {
+    @Test("Featured motifs are colour fields, judged by eye, and nothing else")
+    func featured() {
+        #expect(Motif.featured == [.holo, .mesh, .aurora, .nebula, .classic])
+        let allFeatured = Motif.featured.allSatisfy(\.isFeatured)
+        #expect(allFeatured)
+        #expect(!Motif.eclipse.isFeatured)
+    }
+
+    @Test("Every motif has a blurb")
+    func blurbs() {
+        for motif in Motif.allCases { #expect(!motif.blurb.isEmpty, "\(motif)") }
+    }
+
+    @Test("Soft palettes: five distinct low-chroma sets, four light and Dusk the one dark")
+    func soft() {
+        #expect(Palette.soft.count == 5)
+        let names = Set(Palette.soft.map(\.name))
+        #expect(names.count == Palette.soft.count)
+        let allSoft = Palette.soft.allSatisfy(\.isSoft)
+        #expect(allSoft)
+        for palette in Palette.soft {
+            let lab = palette.base.oklab
+            let chroma = (lab.a * lab.a + lab.b * lab.b).squareRoot()
+            #expect(chroma < 0.1, "\(palette.name) base is not pastel")
+            // Dusk is the deliberate dark one (L 0.38); the rest sit above 0.88.
+            if palette.name == "Dusk" { #expect(lab.l < 0.5) } else { #expect(lab.l > 0.85, "\(palette.name) base is not light") }
+        }
+    }
+}

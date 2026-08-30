@@ -95,10 +95,11 @@ shadows, glows and 3-D relief like everything else (`glyph`, `glyphPattern`).
   `highlight`, `deep`) every recipe is written against; twelve curated
   palettes lifted from reference wallpapers; OKLCH generation from a seed
   with split-complement / analogous-clash / triad harmonies.
-- **Generator** — 21 motifs, each a seeded recipe: `eclipse`, `orb`,
-  `horizon`, `hill`, `crescent`, `halo`, `glow`, `classic`, `aurora`,
-  `mesh`, `nebula`, `topo`, `holo`, `ribbons`, `chevron`, `keycaps`,
-  `liquid`, `prism`, `ladder`, `retro`, `swatches`. Every position, radius,
+- **Generator** — 36 motifs in seven families (soft, fields, surfaces,
+  scenes, textures, flat, fun), each a seeded recipe — from `eclipse` and
+  `horizon` through `liquid`, `keycaps`, `mountains`, `saturn`, `sunset`,
+  `marble`, `terrazzo` to `emoji` and `symbols`. `Wallpaper.recolored(to:)`
+  re-dresses any scene in another palette without regenerating it. Every position, radius,
   spread, ramp and effect is jittered from the seed, so a motif is a family
   and a seed picks one member. `SeededRandom` is SplitMix64 with its own
   distributions, so seeds are stable across Swift versions.
