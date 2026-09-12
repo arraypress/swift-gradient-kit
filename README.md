@@ -106,9 +106,11 @@ strokes export at any size.
   outcome worth engineering against.
 - **Palettes** — six roles (`base`, `baseAlt`, `accent`, `secondary`,
   `highlight`, `deep`) every recipe is written against; twelve curated
-  palettes lifted from reference wallpapers, plus seven built from
-  traditional Japanese colour names (`Palette.japanese`: Ai, Akane, Koke,
-  Sakura, Murasaki, Sumi, Kaki); OKLCH generation from a seed
+  palettes lifted from reference wallpapers, seven built from traditional
+  Japanese colour names (`Palette.japanese`), and thirteen neon-on-dark
+  sets (`Palette.vivid`) built from a ground and two hues with the other
+  roles derived in OKLab; seventeen five-stop `GradientPreset.spectra`
+  ramps that run pale → saturated → deep; OKLCH generation from a seed
   with split-complement / analogous-clash / triad harmonies.
 - **Generator** — 28 motifs in five families (soft, fields, surfaces,
   scenes, flat), each a seeded recipe — from `eclipse` and `horizon`
