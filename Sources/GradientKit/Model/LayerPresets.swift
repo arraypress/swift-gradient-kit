@@ -66,28 +66,32 @@ public extension Layer {
                          ramp: [RampStop(-1, base.with(alpha: 0)), RampStop(-0.2, secondary.with(alpha: 0.6)), RampStop(0.3, accent), RampStop(0.9, highlight)],
                          blend: .screen, opacity: 0.8)
         case .chevrons:
-            // Neutral grey with relief, overlay-blended: lit ridges that take the colour underneath.
-            let grey = RGBA(r: 0.5, g: 0.5, b: 0.5)
             return Layer(name: "Chevrons", shape: .chevrons(through: position, angle: -35, period: 0.16, width: 0.16, amplitude: 0.05, wavelength: 0.5),
-                         spread: 0.08, ramp: [RampStop(-1, grey), RampStop(0, grey)], blend: .overlay,
-                         relief: Relief(height: 0.06, profile: .dome, lightAngle: -110, lightElevation: 40, gloss: 0.7, shininess: 32, ambient: 0.3))
+                         spread: 0.08, ramp: [RampStop(-1, accent), RampStop(0, accent.with(alpha: 0.5)), RampStop(1, fadeOut)],
+                         blend: .screen, opacity: 0.8)
         case .tiles:
-            return Layer(name: "Keycaps", shape: .tiles(center: position, cell: [0.09, 0.09], inset: 0.006, cornerRadius: 0.016, rotation: -8, stagger: 0.5),
-                         spread: 0.03, ramp: [RampStop(-1, base.adjusted(lightness: 0.08)), RampStop(0, base), RampStop(0.15, deep)],
-                         relief: Relief(height: 0.02, profile: .bevel, lightAngle: -120, lightElevation: 50, gloss: 0.6, shininess: 40, ambient: 0.35))
-        case .glyph:
-            // One big emoji with a soft glow behind it.
-            return Layer(name: "Emoji", shape: .glyph(text: "✨", center: position, size: 0.5, rotation: -8),
-                         spread: 0.12, ramp: [RampStop(-1, highlight), RampStop(0, accent), RampStop(1.2, fadeOut)], glyphColor: 1)
+            return Layer(name: "Tiles", shape: .tiles(center: position, cell: [0.09, 0.09], inset: 0.006, cornerRadius: 0.016, rotation: -8, stagger: 0.5),
+                         spread: 0.03, ramp: [RampStop(-1, base.adjusted(lightness: 0.08)), RampStop(0, base), RampStop(0.15, deep)])
         case .rays:
             return Layer(name: "Sunburst", shape: .rays(center: [position.x, position.y + 0.3], count: 18, rotation: 0, width: 0.5),
                          spread: 0.03, ramp: [RampStop(-1, accent.with(alpha: 0.35)), RampStop(0, accent.with(alpha: 0.25)), RampStop(1, accent.with(alpha: 0))],
                          blend: .screen, opacity: 0.9)
-        case .glyphPattern:
-            return Layer(name: "Emoji pattern",
-                         shape: .glyphPattern(text: "🍒🍋🫧", center: position, cell: [0.22, 0.22], size: 0.12, rotation: -18,
-                                              stagger: 0.5, jitter: 0.12, rotationJitter: 25, scaleJitter: 0.15),
-                         spread: 0.01, ramp: [RampStop(-1, accent), RampStop(0, accent), RampStop(1, fadeOut)], glyphColor: 1)
+        case .hexagons:
+            return Layer(name: "Honeycomb", shape: .hexagons(center: position, cell: 0.13, inset: 0.006, rotation: 0),
+                         spread: 0.055,
+                         ramp: [RampStop(-1, base.adjusted(lightness: 0.1)), RampStop(-0.25, accent), RampStop(0, deep), RampStop(0.6, fadeOut)],
+                         opacity: 0.9, lighting: Lighting(angle: -115, amount: 0.5))
+        case .discs:
+            return Layer(name: "Disc grid", shape: .discs(center: position, cell: [0.16, 0.16], radius: 0.062, rotation: 0,
+                                                          stagger: 0.5, jitter: 0, scaleJitter: 0),
+                         spread: 0.09,
+                         ramp: [RampStop(-1, highlight), RampStop(0, accent), RampStop(0.7, fadeOut)],
+                         blend: .screen, opacity: 0.9, lighting: Lighting(angle: -120, amount: 0.55))
+        case .cloth:
+            return Layer(name: "Fold field", shape: .cloth(offset: position, angle: -105, folds: 5, drape: 0.3, octaves: 3),
+                         spread: 0.75,
+                         ramp: [RampStop(-1, secondary), RampStop(-0.1, accent), RampStop(0.55, highlight), RampStop(1, highlight.adjusted(lightness: 0.1))],
+                         opacity: 0.95, hueSweep: 25)
         }
     }
 }

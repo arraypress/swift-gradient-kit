@@ -21,8 +21,9 @@ enum ShaderSource {
 
     struct Stop {
         float4 lab;        // OKLab L, a, b + straight alpha
-        float  position;
-        float  pad0, pad1, pad2;
+        float  position;   // ramp position, or a points background's weight
+        float  px, py;     // points background: the point, in scene units
+        float  pad;
     };
 
     struct SmearData {
@@ -36,9 +37,7 @@ enum ShaderSource {
         float4 p2;   // phase, distortAmount, distortScale, distortOctaves
         float4 p3;   // spread, opacity, litAngle, litAmount
         float4 p4;   // smoothing, seed, repeatPeriod, hueSweep(rad per t)
-        float4 p5;   // chevrons: amplitude, wavelength | tiles: inset, cornerRadius, stagger (xyz)
-        float4 p6;   // relief: height, profile, lightAz(rad), lightEl(rad)
-        float4 p7;   // relief gloss, shininess, ambient, stepped(0/1)
+        float4 p5;   // chevrons: amplitude, wavelength | tiles: inset, cornerRadius, stagger (xyz) | w: stepped(0/1)
         float4 p8;   // clip: cx, cy, halfW, halfH
         float4 p9;   // clip: kind, rotation, feather, inverted
         int kind; int blend; int stopOffset; int stopCount;
@@ -74,28 +73,12 @@ enum ShaderSource {
 
     constant int KIND_CIRCLE = 0, KIND_ELLIPSE = 1, KIND_LINE = 2, KIND_RING = 3, KIND_CRESCENT = 4, KIND_WAVE = 5,
                  KIND_POLYGON = 6, KIND_RECT = 7, KIND_CAPSULE = 8, KIND_STRIPES = 9, KIND_BLOB = 10, KIND_NOISE = 11,
-                 KIND_CHEVRONS = 12, KIND_TILES = 13, KIND_GLYPH = 14, KIND_GLYPH_PATTERN = 15, KIND_RAYS = 16;
+                 KIND_CHEVRONS = 12, KIND_TILES = 13, KIND_RAYS = 14,
+                 KIND_HEXAGONS = 15, KIND_DISCS = 16, KIND_CLOTH = 17;
 
-    // Everything a glyph lookup needs, passed through the distance functions.
-    struct GlyphSampling {
-        texture2d_array<float, access::sample> color;
-        texture2d_array<float, access::sample> sdf;
-        sampler samp;
-    };
-
-    // Local glyph-box coordinates (±0.5 = the box) → signed distance in scene units.
-    inline float glyphDistance(GlyphSampling g, float2 local, float boxSize, uint slice) {
-        float2 uv = clamp(local + 0.5, 0.0, 1.0);
-        float d = g.sdf.sample(g.samp, uv, slice).r * boxSize;
-        // Beyond the box the field is clamped; add the distance to the box.
-        float2 outside = max(abs(local) - 0.5, 0.0);
-        return d + length(outside) * boxSize;
-    }
-
-    // Rotate + place: returns local box coords and the slice for a pattern cell.
     inline float2 rotate2(float2 p, float a) { float c = cos(a), s = sin(a); return float2(p.x * c + p.y * s, -p.x * s + p.y * c); }
 
-    constant int BG_SOLID = 0, BG_LINEAR = 1, BG_RADIAL = 2, BG_MESH = 3;
+    constant int BG_SOLID = 0, BG_LINEAR = 1, BG_RADIAL = 2, BG_MESH = 3, BG_POINTS = 4, BG_CONIC = 5;
 
     inline float floorMod(float x, float y) { return x - y * floor(x / y); }
 
@@ -240,43 +223,10 @@ enum ShaderSource {
 
     // ---------------------------------------------------------------- shapes
 
-    // Resolve a glyph layer at q: local box coords, box size, slice.
-    inline void glyphLocate(constant LayerData& L, float2 q, thread float2& local, thread float& box, thread uint& slice) {
-        float2 rel = q - L.p0.xy;
-        if (L.kind == KIND_GLYPH) {
-            box = max(L.p1.y, 1e-4);
-            local = rotate2(rel, L.p1.x) / box;
-            slice = uint(L.p5.z);
-            return;
-        }
-        float2 cell = max(L.p0.zw, 1e-4);
-        float2 p = rotate2(rel, L.p1.x);
-        float row = floor(p.y / cell.y + 0.5);
-        p.x += L.p1.z * cell.x * row;                              // stagger
-        float2 cellIndex = floor(p / cell + 0.5);
-        float2 center = cellIndex * cell;
-        int2 ci = int2(cellIndex);
-        uint seed = uint(L.p4.y) * 7u + 13u;
-        float h1 = hash1(ci, seed), h2 = hash1(ci, seed + 1u), h3 = hash1(ci, seed + 2u), h4 = hash1(ci, seed + 3u), h5 = hash1(ci, seed + 4u);
-        center += (float2(h1, h2) - 0.5) * L.p1.w * cell;          // position jitter
-        float rot = (h3 - 0.5) * 2.0 * L.p5.x;                     // rotation jitter (rad)
-        float scale = 1.0 + (h4 - 0.5) * 2.0 * L.p5.y;             // scale jitter
-        box = max(L.p1.y * scale, 1e-4);
-        local = rotate2(p - center, rot) / box;
-        uint count = max(uint(L.p5.w), 1u);
-        slice = uint(L.p5.z) + uint(floor(h5 * float(count))) % count;
-    }
-
-    float layerDistance(constant LayerData& L, float2 q, GlyphSampling gs) {
+    float layerDistance(constant LayerData& L, float2 q) {
         float2 c = L.p0.xy;
         float2 rel = q - c;
         switch (L.kind) {
-            case KIND_GLYPH:
-            case KIND_GLYPH_PATTERN: {
-                float2 local; float box; uint slice;
-                glyphLocate(L, q, local, box, slice);
-                return glyphDistance(gs, local, box, slice);
-            }
             case KIND_CIRCLE:
                 return length(rel) - L.p0.z;
             case KIND_ELLIPSE: {
@@ -390,29 +340,75 @@ enum ShaderSource {
                 float2 d2 = abs(local) - (halfSize - cr);
                 return length(max(d2, 0.0)) + min(max(d2.x, d2.y), 0.0) - cr;
             }
+            case KIND_HEXAGONS: {
+                // Hex lattice on the (√3, 1) grid: two interleaved rectangular
+                // lattices, half a cell apart; the nearer centre wins. The cell
+                // distance is the hexagonal max-norm, which is exact across the
+                // flats and monotone everywhere, so a ramp over it behaves.
+                float2 p = rotate2(rel, L.p1.x);
+                float cell = max(L.p0.z, 1e-3);
+                const float2 sv = float2(1.7320508, 1.0);
+                float2 u = p / cell;
+                float4 hC = floor(float4(u, u - float2(0.8660254, 0.5)) / sv.xyxy) + 0.5;
+                float4 h = float4(u - hC.xy * sv, u - (hC.zw + 0.5) * sv);
+                float2 local = dot(h.xy, h.xy) < dot(h.zw, h.zw) ? h.xy : h.zw;
+                float2 a = abs(local);
+                float dh = max(dot(a, sv * 0.5), a.y);        // 0.5 at the cell edge
+                return (dh - 0.5) * cell + L.p1.y;            // inset shrinks the cell
+            }
+            case KIND_DISCS: {
+                // Scan the 3x3 neighbourhood: with jitter on, the nearest disc
+                // is often not the one belonging to this pixel's own cell, and
+                // taking only that one leaves visible rectangular seams.
+                float2 p = rotate2(rel, L.p1.x);
+                float2 cell = max(L.p0.zw, 1e-3);
+                uint seed = uint(L.p4.y) * 7u + 13u;
+                float baseRow = floor(p.y / cell.y + 0.5);
+                float best = 1e9;
+                for (int dy = -1; dy <= 1; dy++) {
+                    float row = baseRow + float(dy);
+                    float shiftedX = p.x + L.p1.z * cell.x * row;      // stagger this row
+                    float baseCol = floor(shiftedX / cell.x + 0.5);
+                    for (int dx = -1; dx <= 1; dx++) {
+                        float col = baseCol + float(dx);
+                        int2 ci = int2(int(col), int(row));
+                        float2 centre = float2(col * cell.x - L.p1.z * cell.x * row, row * cell.y);
+                        centre += (float2(hash1(ci, seed), hash1(ci, seed + 1u)) - 0.5) * L.p1.w * cell;
+                        float radius = max(L.p1.y * (1.0 + (hash1(ci, seed + 2u) - 0.5) * 2.0 * L.p5.x), 1e-4);
+                        best = min(best, length(p - centre) - radius);
+                    }
+                }
+                return best;
+            }
+            case KIND_CLOTH: {
+                // A combed fold field: the lane coordinate across `angle`,
+                // bent by fbm, folded into a triangle wave so the creases
+                // repeat, then smoothed. Not an edge — a value in ±0.7.
+                float a = L.p1.x;
+                float2 n = float2(cos(a), sin(a));
+                float2 along = float2(-n.y, n.x);
+                float2 np = (q - c) * 0.85 + float2(L.p4.y * 0.13, -L.p4.y * 0.07);
+                float bend = fbm(np, int(L.p1.w));
+                // Creases run along `along`; drift them slowly down their length.
+                float lane = dot(q - c, n) * L.p1.y
+                           + bend * L.p1.z * L.p1.y * 0.9
+                           + 0.10 * L.p1.y * fbm(float2(dot(q - c, along) * 0.35, 11.0), 2);
+                // Sinusoidal, not a triangle wave: satin's sheen rolls off
+                // smoothly across a fold. A triangle reads as hard banding.
+                return sin(lane * 6.28318530718) * 0.7;
+            }
         }
         return 1e9;
     }
 
     // Distance including the layer's own noise distortion.
-    float layerField(constant LayerData& L, float2 q, GlyphSampling gs) {
-        float d = layerDistance(L, q, gs);
+    float layerField(constant LayerData& L, float2 q) {
+        float d = layerDistance(L, q);
         if (L.p2.y != 0.0) {
             float2 np = q * L.p2.z + float2(L.p4.y * 0.61, L.p4.y * 0.29);
             d += fbm(np, int(L.p2.w)) * L.p2.y;
         }
         return d;
-    }
-
-    // Height above the surface for a relief layer, from signed distance.
-    inline float reliefHeight(constant LayerData& L, float d) {
-        float x = clamp(-d / max(L.p3.x, 1e-5), 0.0, 1.0);
-        int profile = int(L.p6.y);
-        float h;
-        if (profile == 0)      h = sqrt(max(0.0, 1.0 - (1.0 - x) * (1.0 - x)));   // dome
-        else if (profile == 1) h = x * x * (3.0 - 2.0 * x);                        // bevel
-        else                   h = x;                                              // slope
-        return h * L.p6.x;
     }
 
     // ---------------------------------------------------------------- scene
@@ -450,7 +446,7 @@ enum ShaderSource {
     inline float2 mapUV(float2 norm) { return (norm - MAP_LO) / MAP_SPAN; }
 
     float3 shade(float2 pix, constant Globals& g, constant LayerData* layers, constant Stop* stops,
-                 texture2d<float, access::sample> smearMap, sampler samp, GlyphSampling gs) {
+                 texture2d<float, access::sample> smearMap, sampler samp) {
         float2 q = (pix - g.size * 0.5) / g.minSide;
 
         // Coordinate effects, in the stack's order. Each one displaces the
@@ -479,8 +475,35 @@ enum ShaderSource {
                 t = dot(q, n) / max(ext, 1e-4) * 0.5 + 0.5;
             } else if (g.bgKind == BG_RADIAL) {
                 t = length(q - g.bgCenterRadius.xy) / max(g.bgCenterRadius.z, 1e-4);
+            } else if (g.bgKind == BG_CONIC) {
+                float2 d = q - g.bgCenterRadius.xy;
+                t = fract((atan2(d.y, d.x) - g.bgAngle) * 0.15915494309 + 1.0);   // /2pi, wrapped
             }
-            if (g.bgKind == BG_MESH) {
+            if (g.bgKind == BG_POINTS) {
+                // Inverse-distance weighting over the colour points: colour
+                // metaballs. Done in OKLab, so the blend never greys out the
+                // way an sRGB one does between complementary colours.
+                float2 sp = q - g.bgCenterRadius.xy;
+                float swirl = g.bgMesh.y;
+                if (swirl != 0.0) {
+                    float ang = swirl * length(sp);
+                    float cs = cos(ang), sn = sin(ang);
+                    sp = float2(cs * sp.x - sn * sp.y, sn * sp.x + cs * sp.y);
+                }
+                float2 pq = sp + g.bgCenterRadius.xy;
+                float m = g.bgMesh.x;
+                float4 acc = float4(0.0);
+                float wsum = 0.0;
+                for (int i = 0; i < g.bgStopCount; i++) {
+                    constant Stop& P = stops[g.bgStopOffset + i];
+                    float2 d = pq - float2(P.px, P.py);
+                    float w = P.position / (pow(dot(d, d), m) + 1e-6);
+                    acc += P.lab * w;
+                    wsum += w;
+                }
+                float4 lab = acc / max(wsum, 1e-6);
+                col = oklabToLinear(lab.xyz);
+            } else if (g.bgKind == BG_MESH) {
                 // Bilinear (eased) blend of a colour grid across the warped canvas.
                 int cols = max(int(g.bgMesh.x), 1), rows = max(int(g.bgMesh.y), 1);
                 float2 uv = clamp(q * g.minSide * g.invSize + 0.5, 0.0, 1.0);
@@ -507,14 +530,14 @@ enum ShaderSource {
         // Layers
         for (int i = 0; i < g.layerCount; i++) {
             constant LayerData& L = layers[i];
-            float d = layerField(L, q, gs);
+            float d = layerField(L, q);
             float t = d / max(L.p3.x, 1e-5);
             if (L.p4.z > 0.0) {
                 float period = L.p4.z;
                 t = t - period * floor(t / period + 0.5);   // fold into ±period/2
             }
             float aa = 1.5 / (g.minSide * max(L.p3.x, 1e-5));
-            float4 lab = evalRamp(stops, L.stopOffset, L.stopCount, t, L.p4.x, L.p7.w > 0.5, aa);
+            float4 lab = evalRamp(stops, L.stopOffset, L.stopCount, t, L.p4.x, L.p5.w > 0.5, aa);
             if (L.p4.w != 0.0) {
                 float ang = L.p4.w * t;
                 float cs = cos(ang), sn = sin(ang);
@@ -537,46 +560,20 @@ enum ShaderSource {
                 float inside = 1.0 - smoothstep(-L.p9.z, L.p9.z, cd);
                 alpha *= (L.p9.w > 0.5) ? (1.0 - inside) : inside;
             }
-            if (L.p3.w != 0.0 && L.kind != KIND_LINE && L.kind != KIND_WAVE && L.kind != KIND_STRIPES && L.kind != KIND_NOISE && L.kind != KIND_RAYS) {
+            if (L.p3.w != 0.0 && L.kind != KIND_LINE && L.kind != KIND_WAVE && L.kind != KIND_STRIPES && L.kind != KIND_NOISE && L.kind != KIND_RAYS && L.kind != KIND_CLOTH) {
                 // One-sided light: a linear gradient across the shape's own
                 // radius (no singularity at the centre), eased at both ends.
                 float2 dir = float2(cos(L.p3.z), sin(L.p3.z));
-                float R = max((L.kind == KIND_ELLIPSE || L.kind == KIND_RECT) ? max(L.p0.z, L.p0.w)
-                              : (L.kind == KIND_CAPSULE ? L.p1.x : ((L.kind == KIND_GLYPH || L.kind == KIND_GLYPH_PATTERN) ? L.p1.y * 0.5 : L.p0.z)), 1e-3);
+                bool lattice = (L.kind == KIND_TILES || L.kind == KIND_HEXAGONS || L.kind == KIND_DISCS);
+                float R = lattice ? 0.6
+                        : max((L.kind == KIND_ELLIPSE || L.kind == KIND_RECT) ? max(L.p0.z, L.p0.w)
+                              : (L.kind == KIND_CAPSULE ? L.p1.x : L.p0.z), 1e-3);
                 float facing = clamp(dot(q - L.p0.xy, dir) / R * 0.5 + 0.5, 0.0, 1.0);
                 facing = smoothstep(0.15, 0.9, facing);
                 alpha *= mix(1.0, facing, L.p3.w);
             }
             float3 src = oklabToLinear(lab.xyz);
-            if ((L.kind == KIND_GLYPH || L.kind == KIND_GLYPH_PATTERN) && L.p2.x > 0.0) {
-                // The emoji's own colours inside its outline, blended by glyphColor.
-                float2 local; float box; uint slice;
-                glyphLocate(L, q, local, box, slice);
-                float2 uv = clamp(local + 0.5, 0.0, 1.0);
-                bool inBox = all(abs(local) <= 0.5);
-                float4 pm = inBox ? gs.color.sample(gs.samp, uv, slice) : float4(0.0);
-                float ga = pm.a;
-                float3 emoji = ga > 1e-4 ? pow(pm.rgb / ga, 2.2) : src;     // un-premultiply, to linear
-                float k = L.p2.x * ga;
-                src = mix(src, emoji, k);
-                // Outside the emoji's own ink, only the ramp's alpha applies; inside, its coverage.
-                alpha = mix(alpha, ga * L.p3.y, L.p2.x * (d < 0.0 ? 1.0 : 0.0));
-            }
             if (alpha <= 0.0) continue;
-            if (L.p6.x > 0.0) {
-                // Relief: slope of the height field → normal → directional light + specular.
-                float eps = 1.5 / g.minSide;
-                float h0 = reliefHeight(L, d);
-                float hx = reliefHeight(L, layerField(L, q + float2(eps, 0.0), gs));
-                float hy = reliefHeight(L, layerField(L, q + float2(0.0, eps), gs));
-                float3 nrm = normalize(float3(-(hx - h0) / eps, -(hy - h0) / eps, 1.0));
-                float az = L.p6.z, el = L.p6.w;
-                float3 Ld = float3(cos(az) * cos(el), sin(az) * cos(el), sin(el));
-                float diffuse = mix(L.p7.z, 1.0, max(dot(nrm, Ld), 0.0));
-                float3 H = normalize(Ld + float3(0.0, 0.0, 1.0));
-                float spec = L.p7.x * pow(max(dot(nrm, H), 0.0), max(L.p7.y, 1.0));
-                src = src * diffuse + spec;
-            }
             float3 blended = blendMode(L.blend, col, src);
             col = mix(col, blended, clamp(alpha, 0.0, 1.0));
         }
@@ -588,14 +585,11 @@ enum ShaderSource {
                                       constant LayerData* layers [[buffer(1)]],
                                       constant Stop* stops [[buffer(2)]],
                                       constant SmearData* smears [[buffer(3)]],
-                                      texture2d_array<float, access::sample> glyphColor [[texture(1)]],
-                                      texture2d_array<float, access::sample> glyphSDF [[texture(2)]],
                                       texture2d<float, access::sample> smearMap [[texture(3)]],
-                                      sampler glyphSampler [[sampler(0)]],
+                                      sampler linearSampler [[sampler(0)]],
                                       uint2 gid [[thread_position_in_grid]]) {
         if (gid.x >= out.get_width() || gid.y >= out.get_height()) return;
         float2 pix = float2(gid) + 0.5;
-        GlyphSampling gs = { glyphColor, glyphSDF, glyphSampler };
 
         float3 col;
         if (g.misc.x > 0.0) {
@@ -604,11 +598,11 @@ enum ShaderSource {
             float r = length(fromCenter / halfSize) / 1.41421356;   // 0 centre … 1 corner
             float2 dir = fromCenter / max(length(fromCenter), 1e-3);
             float2 off = dir * g.misc.x * r * r;
-            col.r = shade(pix + off, g, layers, stops, smearMap, glyphSampler, gs).r;
-            col.g = shade(pix, g, layers, stops, smearMap, glyphSampler, gs).g;
-            col.b = shade(pix - off, g, layers, stops, smearMap, glyphSampler, gs).b;
+            col.r = shade(pix + off, g, layers, stops, smearMap, linearSampler).r;
+            col.g = shade(pix, g, layers, stops, smearMap, linearSampler).g;
+            col.b = shade(pix - off, g, layers, stops, smearMap, linearSampler).b;
         } else {
-            col = shade(pix, g, layers, stops, smearMap, glyphSampler, gs);
+            col = shade(pix, g, layers, stops, smearMap, linearSampler);
         }
 
         // Colour effects, in the stack's order. `col` stays linear; grain

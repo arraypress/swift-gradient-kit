@@ -84,7 +84,25 @@ public struct Wallpaper: Codable, Sendable, Equatable {
 // MARK: - Background
 
 public struct Background: Codable, Sendable, Equatable {
-    public enum Kind: String, Codable, Sendable, CaseIterable { case solid, linear, radial, mesh }
+    public enum Kind: String, Codable, Sendable, CaseIterable {
+        case solid, linear, radial, mesh
+        /// Free-floating colour points blended by inverse distance — the
+        /// "mesh gradient" everyone actually means. See `points`.
+        case points
+        /// Stops swept around `center`, starting at `angle`.
+        case conic
+
+        public var displayName: String {
+            switch self {
+            case .solid: "Solid"
+            case .linear: "Linear"
+            case .radial: "Radial"
+            case .mesh: "Grid"
+            case .points: "Points"
+            case .conic: "Conic"
+            }
+        }
+    }
 
     public var kind: Kind
     /// Positions 0...1 along the gradient (ignored for `.solid`, which uses
@@ -106,13 +124,27 @@ public struct Background: Codable, Sendable, Equatable {
     /// Piecewise-constant: each stop's colour holds until the next stop —
     /// hard bands instead of a blend. Colour ladders, retro stripes.
     public var stepped: Bool
+    /// `.points`: the colour points. Each is blended into every pixel with a
+    /// weight of `weight / distance^(2·mixing)`, so the field is smooth
+    /// everywhere and exactly the point's colour at the point — colour
+    /// metaballs. This is what a soft "mesh gradient" is made of; the grid
+    /// in `.mesh` cannot produce it.
+    public var points: [MeshPoint]
+    /// `.points`: blend exponent. 0.5 = broad, mushy washes; 1 = the default
+    /// balance; 2 = tight pools of colour with sharp valleys between them.
+    public var mixing: Double
+    /// `.points`: rotates the sampled position by `swirl` radians per unit of
+    /// distance from the centre, so the field winds around itself.
+    public var swirl: Double
 
     public init(kind: Kind, stops: [RampStop], angle: Double = 90,
                 center: Vec2 = [0.5, 0.5], radius: Double = 0.8, smoothing: Double = 0.5,
-                meshColumns: Int = 2, meshRows: Int = 2, stepped: Bool = false) {
+                meshColumns: Int = 2, meshRows: Int = 2, stepped: Bool = false,
+                points: [MeshPoint] = [], mixing: Double = 1, swirl: Double = 0) {
         self.kind = kind; self.stops = stops; self.angle = angle
         self.center = center; self.radius = radius; self.smoothing = smoothing
         self.meshColumns = meshColumns; self.meshRows = meshRows; self.stepped = stepped
+        self.points = points; self.mixing = mixing; self.swirl = swirl
     }
 
     /// `count` flat bands running along `angle`, colours blended in OKLab
@@ -139,6 +171,9 @@ public struct Background: Codable, Sendable, Equatable {
         meshColumns = try c.decodeIfPresent(Int.self, forKey: .meshColumns) ?? 2
         meshRows = try c.decodeIfPresent(Int.self, forKey: .meshRows) ?? 2
         stepped = try c.decodeIfPresent(Bool.self, forKey: .stepped) ?? false
+        points = try c.decodeIfPresent([MeshPoint].self, forKey: .points) ?? []
+        mixing = try c.decodeIfPresent(Double.self, forKey: .mixing) ?? 1
+        swirl = try c.decodeIfPresent(Double.self, forKey: .swirl) ?? 0
     }
 
     /// A grid of colours, row-major, `columns` wide.
@@ -165,6 +200,51 @@ public struct Background: Codable, Sendable, Equatable {
                               smoothing: Double = 0.5) -> Background {
         Background(kind: .radial, stops: RampStop.spread(colors, from: 0, to: 1),
                    center: center, radius: radius, smoothing: smoothing)
+    }
+
+    /// Stops swept around a centre. `angle` is where position 0 sits.
+    public static func conic(_ colors: [RGBA], center: Vec2 = [0.5, 0.5], angle: Double = -90,
+                             smoothing: Double = 0.5) -> Background {
+        Background(kind: .conic, stops: RampStop.spread(colors, from: 0, to: 1),
+                   angle: angle, center: center, smoothing: smoothing)
+    }
+
+    /// Colour points blended by inverse distance.
+    public static func points(_ points: [MeshPoint], mixing: Double = 1, swirl: Double = 0) -> Background {
+        Background(kind: .points, stops: [], points: points, mixing: mixing, swirl: swirl)
+    }
+
+    /// `colors` scattered on a golden-angle spiral inside the canvas — an
+    /// even, unrepetitive arrangement that needs no hand placement.
+    public static func points(_ colors: [RGBA], mixing: Double = 1, swirl: Double = 0,
+                              spread: Double = 0.34) -> Background {
+        let golden = 2.39996322972865332
+        let pts = colors.enumerated().map { i, c -> MeshPoint in
+            let t = colors.count > 1 ? Double(i) / Double(colors.count - 1) : 0
+            let r = spread * (0.35 + 0.65 * t.squareRoot())
+            let a = Double(i) * golden
+            return MeshPoint(position: [0.5 + r * Foundation.cos(a), 0.5 + r * Foundation.sin(a)], color: c)
+        }
+        return .points(pts, mixing: mixing, swirl: swirl)
+    }
+}
+
+/// One colour point of a `.points` background. Position is canvas-normalised.
+public struct MeshPoint: Codable, Sendable, Equatable {
+    public var position: Vec2
+    public var color: RGBA
+    /// Relative pull. 1 is neutral; a heavier point spreads further.
+    public var weight: Double
+
+    public init(position: Vec2, color: RGBA, weight: Double = 1) {
+        self.position = position; self.color = color; self.weight = weight
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        position = try c.decode(Vec2.self, forKey: .position)
+        color = try c.decode(RGBA.self, forKey: .color)
+        weight = try c.decodeIfPresent(Double.self, forKey: .weight) ?? 1
     }
 }
 
@@ -226,12 +306,6 @@ public struct Layer: Codable, Sendable, Equatable, Identifiable {
     public var hueSweep: Double
     /// Piecewise-constant ramp: hard bands between stops.
     public var stepped: Bool
-    /// Treat the distance field as a height field and light it — bevelled
-    /// tiles, extruded ridges, glossy blobs.
-    public var relief: Relief
-    /// Glyph shapes only: 1 = the emoji's own colours, 0 = a silhouette in
-    /// the ramp's colours (for shadows, glows, monochrome patterns).
-    public var glyphColor: Double
     /// Confine the layer to a simple region — stripes inside a sun, a
     /// texture inside a tile, a ring only where it passes in front.
     public var clip: Clip?
@@ -250,15 +324,13 @@ public struct Layer: Codable, Sendable, Equatable, Identifiable {
                 repeatPeriod: Double = 0,
                 hueSweep: Double = 0,
                 stepped: Bool = false,
-                relief: Relief = Relief(),
-                glyphColor: Double = 1,
                 clip: Clip? = nil,
                 isEnabled: Bool = true) {
         self.id = id; self.name = name; self.shape = shape; self.spread = spread
         self.ramp = ramp; self.blend = blend; self.opacity = opacity
         self.smoothing = smoothing; self.distortion = distortion
         self.lighting = lighting; self.repeatPeriod = repeatPeriod; self.hueSweep = hueSweep
-        self.stepped = stepped; self.relief = relief; self.glyphColor = glyphColor; self.clip = clip
+        self.stepped = stepped; self.clip = clip
         self.isEnabled = isEnabled
     }
 
@@ -277,8 +349,6 @@ public struct Layer: Codable, Sendable, Equatable, Identifiable {
         repeatPeriod = try c.decodeIfPresent(Double.self, forKey: .repeatPeriod) ?? 0
         hueSweep = try c.decodeIfPresent(Double.self, forKey: .hueSweep) ?? 0
         stepped = try c.decodeIfPresent(Bool.self, forKey: .stepped) ?? false
-        relief = try c.decodeIfPresent(Relief.self, forKey: .relief) ?? Relief()
-        glyphColor = try c.decodeIfPresent(Double.self, forKey: .glyphColor) ?? 1
         clip = try c.decodeIfPresent(Clip.self, forKey: .clip)
         isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
     }
@@ -291,7 +361,7 @@ public struct Layer: Codable, Sendable, Equatable, Identifiable {
             && lhs.smoothing == rhs.smoothing && lhs.distortion == rhs.distortion
             && lhs.lighting == rhs.lighting && lhs.repeatPeriod == rhs.repeatPeriod
             && lhs.hueSweep == rhs.hueSweep && lhs.stepped == rhs.stepped
-            && lhs.relief == rhs.relief && lhs.glyphColor == rhs.glyphColor && lhs.clip == rhs.clip && lhs.isEnabled == rhs.isEnabled
+            && lhs.clip == rhs.clip && lhs.isEnabled == rhs.isEnabled
     }
 }
 
@@ -322,43 +392,6 @@ public struct Clip: Codable, Sendable, Equatable {
     public static func rect(center: Vec2, size: Vec2, rotation: Double = 0, feather: Double = 0.005, inverted: Bool = false) -> Clip {
         Clip(kind: .rect, center: center, size: size, rotation: rotation, feather: feather, inverted: inverted)
     }
-}
-
-/// Surface lighting derived from the distance field. The field becomes a
-/// height map (`profile` over one `spread` inside the edge), normals come
-/// from its slope, and the layer's colour is shaded with a directional
-/// light plus a specular highlight.
-public struct Relief: Codable, Sendable, Equatable {
-    public enum Profile: String, Codable, Sendable, CaseIterable {
-        /// Quarter-circle rise: rounded, glossy — blobs, ridges.
-        case dome
-        /// Smooth ramp then flat top — bevelled tiles, keycaps.
-        case bevel
-        /// Straight slope — chiselled facets.
-        case slope
-    }
-
-    /// Apparent height in min-side units; 0 = off.
-    public var height: Double
-    public var profile: Profile
-    /// Where the light sits, degrees in the plane (0 right, 90 down).
-    public var lightAngle: Double
-    /// Light elevation, degrees above the surface (90 = straight on).
-    public var lightElevation: Double
-    /// Specular strength 0...1.
-    public var gloss: Double
-    /// Specular tightness; 8 = broad plastic, 96 = tight chrome.
-    public var shininess: Double
-    /// Fill light so the unlit side is not black.
-    public var ambient: Double
-
-    public init(height: Double = 0, profile: Profile = .dome, lightAngle: Double = -120, lightElevation: Double = 45,
-                gloss: Double = 0.5, shininess: Double = 24, ambient: Double = 0.35) {
-        self.height = height; self.profile = profile; self.lightAngle = lightAngle
-        self.lightElevation = lightElevation; self.gloss = gloss; self.shininess = shininess; self.ambient = ambient
-    }
-
-    public var isActive: Bool { height > 0 }
 }
 
 public struct Distortion: Codable, Sendable, Equatable {
@@ -429,26 +462,31 @@ public enum Shape: Codable, Sendable, Equatable {
     /// noise to colour — clouds, nebulae; with `repeatPeriod`, contour maps.
     case noise(offset: Vec2, scale: Double, octaves: Int)
     /// Stripes whose centre-lines zigzag: a triangle wave of `amplitude`
-    /// every `wavelength` along the stripe. With relief, extruded chevrons.
+    /// every `wavelength` along the stripe.
     case chevrons(through: Vec2, angle: Double, period: Double, width: Double, amplitude: Double, wavelength: Double)
     /// A grid of rounded tiles: `cell` is the grid pitch (w, h), `inset`
     /// the gap from cell edge to tile edge, rows shifted by `stagger`
-    /// (fraction of a cell). With relief, keycaps.
+    /// (fraction of a cell).
     case tiles(center: Vec2, cell: Vec2, inset: Double, cornerRadius: Double, rotation: Double, stagger: Double)
-    /// One emoji (or a short word) as a shape: `size` is its box in
-    /// min-side units. The distance field comes from its rasterised
-    /// outline, so it takes rims, glows and relief like anything else.
-    case glyph(text: String, center: Vec2, size: Double, rotation: Double)
-    /// A tiled field of glyphs. `text` may hold several emoji — each cell
-    /// picks one by hash. `cell` is the pitch, `size` the glyph box,
-    /// `stagger` shifts alternate rows, `jitter` scatters positions (fraction
-    /// of a cell), `rotationJitter` (degrees) and `scaleJitter` (fraction)
-    /// vary each glyph.
-    case glyphPattern(text: String, center: Vec2, cell: Vec2, size: Double, rotation: Double,
-                      stagger: Double, jitter: Double, rotationJitter: Double, scaleJitter: Double)
     /// `count` wedges radiating from `center`, each covering `width` (0…1) of
     /// its slice; inside a wedge is negative. A sunburst.
     case rays(center: Vec2, count: Int, rotation: Double, width: Double)
+    /// A honeycomb: flat-topped hexagons on a lattice of pitch `cell`
+    /// (min-side units, centre to centre), each shrunk by `inset`. Inside a
+    /// cell is negative, so a ramp over distance gives the bevelled edge.
+    case hexagons(center: Vec2, cell: Double, inset: Double, rotation: Double)
+    /// A lattice of discs — the sphere grid, the pixel-orb field, and
+    /// out-of-focus bokeh, depending on `radius` against `cell` and how soft
+    /// the ramp is. `stagger` shifts alternate rows (0.5 = brick), `jitter`
+    /// scatters each disc within its cell and `scaleJitter` varies its size.
+    case discs(center: Vec2, cell: Vec2, radius: Double, rotation: Double,
+               stagger: Double, jitter: Double, scaleJitter: Double)
+    /// Not an edge: a directional FOLD field in about −0.7…0.7, like
+    /// `.noise` but combed along `angle` so the contours run as parallel
+    /// creases rather than blobs. `folds` is creases per min-side, `drape`
+    /// how far fractal noise bends them off-straight. Mapped through a ramp
+    /// it reads as satin or silk; add `hueSweep` for shot silk.
+    case cloth(offset: Vec2, angle: Double, folds: Double, drape: Double, octaves: Int)
 
     public var kind: Kind {
         switch self {
@@ -466,30 +504,24 @@ public enum Shape: Codable, Sendable, Equatable {
         case .noise: .noise
         case .chevrons: .chevrons
         case .tiles: .tiles
-        case .glyph: .glyph
-        case .glyphPattern: .glyphPattern
         case .rays: .rays
-        }
-    }
-
-    /// The emoji/text a glyph shape draws, if any.
-    public var glyphText: String? {
-        switch self {
-        case let .glyph(t, _, _, _), let .glyphPattern(t, _, _, _, _, _, _, _, _): t
-        default: nil
+        case .hexagons: .hexagons
+        case .discs: .discs
+        case .cloth: .cloth
         }
     }
 
     public var kindName: String { kind.rawValue }
 
     public enum Kind: String, Codable, Sendable, CaseIterable, Identifiable {
-        case circle, ellipse, line, wave, ring, crescent, polygon, rect, capsule, stripes, blob, noise, chevrons, tiles, glyph, glyphPattern, rays
+        case circle, ellipse, line, wave, ring, crescent, polygon, rect, capsule, stripes, blob, noise, chevrons, tiles, rays, hexagons, discs, cloth
         public var id: String { rawValue }
         public var displayName: String {
             switch self {
             case .rect: "Rectangle"
-            case .glyph: "Emoji"
-            case .glyphPattern: "Emoji pattern"
+            case .hexagons: "Honeycomb"
+            case .discs: "Disc grid"
+            case .cloth: "Fold field"
             default: rawValue.prefix(1).uppercased() + rawValue.dropFirst()
             }
         }
@@ -504,7 +536,9 @@ public enum Shape: Codable, Sendable, Equatable {
             case let .line(p, _, _), let .wave(p, _, _, _, _), let .stripes(p, _, _, _, _), let .chevrons(p, _, _, _, _, _): p
             case let .capsule(a, _, _): a
             case let .noise(o, _, _): o
-            case let .tiles(c, _, _, _, _, _), let .glyph(_, c, _, _), let .glyphPattern(_, c, _, _, _, _, _, _, _), let .rays(c, _, _, _): c
+            case let .tiles(c, _, _, _, _, _), let .rays(c, _, _, _): c
+            case let .hexagons(c, _, _, _), let .discs(c, _, _, _, _, _, _): c
+            case let .cloth(o, _, _, _, _): o
             }
         }
         set {
@@ -524,10 +558,10 @@ public enum Shape: Codable, Sendable, Equatable {
             case let .noise(_, sc, oct): self = .noise(offset: newValue, scale: sc, octaves: oct)
             case let .chevrons(_, a, p, w, amp, wl): self = .chevrons(through: newValue, angle: a, period: p, width: w, amplitude: amp, wavelength: wl)
             case let .tiles(_, cell, inset, cr, rot, st): self = .tiles(center: newValue, cell: cell, inset: inset, cornerRadius: cr, rotation: rot, stagger: st)
-            case let .glyph(t, _, sz, rot): self = .glyph(text: t, center: newValue, size: sz, rotation: rot)
-            case let .glyphPattern(t, _, cell, sz, rot, st, j, rj, sj):
-                self = .glyphPattern(text: t, center: newValue, cell: cell, size: sz, rotation: rot, stagger: st, jitter: j, rotationJitter: rj, scaleJitter: sj)
             case let .rays(_, n, rot, w): self = .rays(center: newValue, count: n, rotation: rot, width: w)
+            case let .hexagons(_, cell, inset, rot): self = .hexagons(center: newValue, cell: cell, inset: inset, rotation: rot)
+            case let .discs(_, cell, r, rot, st, j, sj): self = .discs(center: newValue, cell: cell, radius: r, rotation: rot, stagger: st, jitter: j, scaleJitter: sj)
+            case let .cloth(_, a, f, dr, oct): self = .cloth(offset: newValue, angle: a, folds: f, drape: dr, octaves: oct)
             }
         }
     }
@@ -542,8 +576,9 @@ public enum Shape: Codable, Sendable, Equatable {
             case let .rect(_, sz, _, _): max(sz.x, sz.y)
             case let .stripes(_, _, p, _, _), let .chevrons(_, _, p, _, _, _): p
             case let .tiles(_, cell, _, _, _, _): max(cell.x, cell.y)
-            case let .glyph(_, _, sz, _), let .glyphPattern(_, _, _, sz, _, _, _, _, _): sz
-            case .line, .wave, .noise, .rays: nil
+            case let .hexagons(_, cell, _, _): cell
+            case let .discs(_, cell, _, _, _, _, _): max(cell.x, cell.y)
+            case .line, .wave, .noise, .rays, .cloth: nil
             }
         }
         set {
@@ -569,11 +604,14 @@ public enum Shape: Codable, Sendable, Equatable {
                 let m = max(cell.x, cell.y)
                 let k = m > 0 ? v / m : 1
                 self = .tiles(center: c, cell: cell * k, inset: inset * k, cornerRadius: cr * k, rotation: rot, stagger: st)
-            case let .glyph(t, c, _, rot): self = .glyph(text: t, center: c, size: v, rotation: rot)
-            case let .glyphPattern(t, c, cell, sz, rot, st, j, rj, sj):
-                let k = sz > 0 ? v / sz : 1
-                self = .glyphPattern(text: t, center: c, cell: cell * k, size: v, rotation: rot, stagger: st, jitter: j, rotationJitter: rj, scaleJitter: sj)
-            case .line, .wave, .noise, .rays: break
+            case let .hexagons(c, cell, inset, rot):
+                let k = cell > 0 ? v / cell : 1
+                self = .hexagons(center: c, cell: v, inset: inset * k, rotation: rot)
+            case let .discs(c, cell, r, rot, st, j, sj):
+                let m = max(cell.x, cell.y)
+                let k = m > 0 ? v / m : 1
+                self = .discs(center: c, cell: cell * k, radius: r * k, rotation: rot, stagger: st, jitter: j, scaleJitter: sj)
+            case .line, .wave, .noise, .rays, .cloth: break
             }
         }
     }
@@ -584,7 +622,9 @@ public enum Shape: Codable, Sendable, Equatable {
             switch self {
             case let .ellipse(_, _, rot), let .polygon(_, _, _, rot, _), let .rect(_, _, rot, _), let .blob(_, _, _, _, rot): rot
             case let .line(_, a, _), let .wave(_, a, _, _, _), let .stripes(_, a, _, _, _), let .chevrons(_, a, _, _, _, _): a
-            case let .tiles(_, _, _, _, rot, _), let .glyph(_, _, _, rot), let .glyphPattern(_, _, _, _, rot, _, _, _, _), let .rays(_, _, rot, _): rot
+            case let .tiles(_, _, _, _, rot, _), let .rays(_, _, rot, _): rot
+            case let .hexagons(_, _, _, rot), let .discs(_, _, _, rot, _, _, _): rot
+            case let .cloth(_, a, _, _, _): a
             case let .capsule(a, b, _): atan2(b.y - a.y, b.x - a.x) * 180 / .pi
             default: nil
             }
@@ -601,10 +641,10 @@ public enum Shape: Codable, Sendable, Equatable {
             case let .stripes(p, _, per, w, b): self = .stripes(through: p, angle: v, period: per, width: w, bend: b)
             case let .chevrons(p, _, per, w, amp, wl): self = .chevrons(through: p, angle: v, period: per, width: w, amplitude: amp, wavelength: wl)
             case let .tiles(c, cell, inset, cr, _, st): self = .tiles(center: c, cell: cell, inset: inset, cornerRadius: cr, rotation: v, stagger: st)
-            case let .glyph(t, c, sz, _): self = .glyph(text: t, center: c, size: sz, rotation: v)
-            case let .glyphPattern(t, c, cell, sz, _, st, j, rj, sj):
-                self = .glyphPattern(text: t, center: c, cell: cell, size: sz, rotation: v, stagger: st, jitter: j, rotationJitter: rj, scaleJitter: sj)
             case let .rays(c, n, _, w): self = .rays(center: c, count: n, rotation: v, width: w)
+            case let .hexagons(c, cell, inset, _): self = .hexagons(center: c, cell: cell, inset: inset, rotation: v)
+            case let .discs(c, cell, r, _, st, j, sj): self = .discs(center: c, cell: cell, radius: r, rotation: v, stagger: st, jitter: j, scaleJitter: sj)
+            case let .cloth(o, _, f, dr, oct): self = .cloth(offset: o, angle: v, folds: f, drape: dr, octaves: oct)
             case let .capsule(a, b, r):
                 let len = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
                 let rad = v * .pi / 180
@@ -641,14 +681,17 @@ public enum Shape: Codable, Sendable, Equatable {
         case .tiles:
             let cell = max(r * 0.35, 0.03)
             return .tiles(center: c, cell: [cell, cell], inset: cell * 0.08, cornerRadius: cell * 0.18, rotation: angle ?? 0, stagger: 0.5)
-        case .glyph:
-            return .glyph(text: glyphText ?? "✨", center: c, size: r * 1.6, rotation: angle ?? 0)
-        case .glyphPattern:
-            let sz = max(min(r * 0.5, 0.3), 0.04)
-            return .glyphPattern(text: glyphText ?? "✨", center: c, cell: [sz * 1.7, sz * 1.7], size: sz, rotation: angle ?? -20,
-                                 stagger: 0.5, jitter: 0.15, rotationJitter: 20, scaleJitter: 0.15)
         case .rays:
             return .rays(center: c, count: 16, rotation: angle ?? 0, width: 0.5)
+        case .hexagons:
+            let cell = max(r * 0.4, 0.04)
+            return .hexagons(center: c, cell: cell, inset: cell * 0.06, rotation: angle ?? 0)
+        case .discs:
+            let cell = max(r * 0.45, 0.05)
+            return .discs(center: c, cell: [cell, cell], radius: cell * 0.38, rotation: angle ?? 0,
+                          stagger: 0.5, jitter: 0, scaleJitter: 0)
+        case .cloth:
+            return .cloth(offset: c, angle: a, folds: 6, drape: 0.35, octaves: 3)
         }
     }
 }

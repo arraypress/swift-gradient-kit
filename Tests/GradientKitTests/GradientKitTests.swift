@@ -71,7 +71,7 @@ struct ModelTests {
     @Test("GPU layouts match the shader's expectations")
     func layouts() {
         #expect(MemoryLayout<GPUStop>.stride == 32)
-        #expect(MemoryLayout<GPULayer>.stride == 176)
+        #expect(MemoryLayout<GPULayer>.stride == 144)
         #expect(MemoryLayout<GPUGlobals>.stride == 192)
     }
 }
@@ -358,104 +358,6 @@ struct StoreTests {
         #expect(Set(Palette.curated.map(\.name)).count == Palette.curated.count)
     }
 }
-
-@Suite("Glyphs")
-struct GlyphTests {
-    private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: Int) {
-        let data = image.dataProvider!.data! as Data
-        let i = y * image.bytesPerRow + x * 4
-        return (Int(data[i]), Int(data[i + 1]), Int(data[i + 2]))
-    }
-
-    @Test("Rasterised glyph has ink, a signed field, and the field is zero at the outline")
-    func rasterise() {
-        let bmp = GlyphRasterizer.render("●", size: 128)
-        let n = bmp.size
-        let centre = bmp.sdf[(n / 2) * n + n / 2]
-        let corner = bmp.sdf[0]
-        #expect(centre < -0.2 && corner > 0.2)
-        #expect(bmp.rgba[((n / 2) * n + n / 2) * 4 + 3] > 200)
-        // Somewhere on the middle row the field crosses zero.
-        let row = (0..<n).map { bmp.sdf[(n / 2) * n + $0] }
-        #expect(row.min()! < 0 && row.max()! > 0)
-        #expect("🍒🍋🫧".glyphs.count == 3 && "a b".glyphs == ["a", "b"])
-    }
-
-    @Test("A glyph layer paints the emoji's own colour and a silhouette layer paints the ramp's")
-    func render() throws {
-        let r = try WallpaperRenderer()
-        var w = Wallpaper(background: .solid(.black))
-        w.effects.grain = .none
-        // A red heart, own colours: centre pixel red-ish.
-        w.layers = [Layer(shape: .glyph(text: "❤️", center: [0.5, 0.5], size: 0.6, rotation: 0), spread: 0.02,
-                          ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))], glyphColor: 1)]
-        var img = try r.render(w, width: 100, height: 100)
-        let p = pixel(img, 50, 55)
-        #expect(p.r > 150 && p.g < 120)
-        #expect(pixel(img, 3, 3).r < 3)
-        // Silhouette: same shape, ramp white, glyphColor 0 → white inside.
-        w.layers[0].glyphColor = 0
-        img = try r.render(w, width: 100, height: 100)
-        let q = pixel(img, 50, 55)
-        #expect(q.r > 240 && q.g > 240 && q.b > 240)
-        // Pattern with several glyphs renders and reaches beyond one cell.
-        w.layers = [Layer(shape: .glyphPattern(text: "●■▲", center: [0.5, 0.5], cell: [0.2, 0.2], size: 0.12, rotation: 15,
-                                               stagger: 0.5, jitter: 0.1, rotationJitter: 20, scaleJitter: 0.1),
-                          spread: 0.01, ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))], glyphColor: 0)]
-        img = try r.render(w, width: 200, height: 120)
-        let data = img.dataProvider!.data! as Data
-        var lit = 0
-        for i in stride(from: 0, to: data.count, by: 4) where data[i] > 200 { lit += 1 }
-        #expect(lit > 200 && lit < 200 * 120 / 2)
-        _ = try r.render(Wallpaper.generate(.emoji, seed: 4), width: 120, height: 200)
-    }
-}
-
-@Suite("Symbols & shape files")
-struct SymbolTests {
-    @Test("Tokens split correctly and an SF Symbol rasterises with ink")
-    func symbols() throws {
-        #expect("sf:star.fill 🍒 file:x.svg ab".glyphs == ["sf:star.fill", "🍒", "file:x.svg", "a", "b"])
-        #expect(GlyphRasterizer.Source("sf:heart.fill") == .symbol("heart.fill"))
-        #expect(GlyphRasterizer.Source("file:a.png").token == "file:a.png")
-        let bmp = GlyphRasterizer.render("sf:star.fill", size: 128)
-        let n = bmp.size
-        let inked = bmp.rgba.enumerated().filter { $0.offset % 4 == 3 && $0.element > 128 }.count
-        #expect(inked > 500)
-        #expect(bmp.sdf[(n / 2) * n + n / 2] < 0 && bmp.sdf[0] > 0)
-        // Unknown symbol → empty glyph, never a crash.
-        let none = GlyphRasterizer.render("sf:no.such.symbol.zzz", size: 32)
-        #expect(none.sdf.allSatisfy { $0 > 0 })
-    }
-
-    @Test("A shape file is found through the search path and renders")
-    func files() throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("gk-shapes-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        // A black disc on transparent, as PNG.
-        let n = 64
-        let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8, bytesPerRow: 0,
-                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
-        ctx.fillEllipse(in: CGRect(x: 8, y: 8, width: 48, height: 48))
-        let url = dir.appendingPathComponent("disc.png")
-        try ImageExport.write(ctx.makeImage()!, to: url, format: .png)
-        GlyphRasterizer.shapeSearchPaths = [dir]
-        defer { GlyphRasterizer.shapeSearchPaths = [] }
-        let bmp = GlyphRasterizer.render("file:disc.png", size: 96)
-        #expect(bmp.sdf[(96 / 2) * 96 + 96 / 2] < -0.2 && bmp.sdf[0] > 0.2)
-        let r = try WallpaperRenderer()
-        var w = Wallpaper(background: .solid(.black))
-        w.effects.grain = .none
-        w.layers = [Layer(shape: .glyphPattern(text: "file:disc.png sf:star.fill", center: [0.5, 0.5], cell: [0.3, 0.3], size: 0.2, rotation: 0,
-                                               stagger: 0, jitter: 0, rotationJitter: 0, scaleJitter: 0),
-                          spread: 0.01, ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))], glyphColor: 0)]
-        _ = try r.render(w, width: 96, height: 64)
-        _ = try r.render(Wallpaper.generate(.symbols, seed: 2), width: 96, height: 64)
-    }
-}
-
 @Suite("Effect order")
 struct EffectOrderTests {
     @Test("Order normalises, moves, round-trips, and changes the render")
@@ -558,7 +460,104 @@ struct ClipTests {
         // 4 rays of half width: centred on 0°, 90°, 180°, 270°; gaps at 45° etc.
         #expect(pixel(img, 90, 50) > 250)          // 0°
         #expect(pixel(img, 80, 20) < 3)            // ~ -56°: in a gap
-        for motif in [Motif.sunset, .saturn, .rays] { _ = try r.render(Wallpaper.generate(motif, seed: 3), width: 96, height: 54) }
+        for motif in [Motif.sunset, .mountains, .rays] { _ = try r.render(Wallpaper.generate(motif, seed: 3), width: 96, height: 54) }
+    }
+}
+
+@Suite("SVG export")
+struct SVGTests {
+    @Test("Well-formed, sized, with named layers and no 8-digit hex")
+    func structure() throws {
+        var w = Wallpaper.generate(.eclipse, seed: 3, aspect: 16.0 / 9.0)
+        w.layers[0].name = "Rim & shadow"        // forces XML escaping
+        let r = SVGExport.export(w, width: 800, height: 450)
+        #expect(r.svg.hasPrefix("<svg xmlns=\"http://www.w3.org/2000/svg\""))
+        #expect(r.svg.hasSuffix("</svg>"))
+        #expect(r.svg.contains("width=\"800\"") && r.svg.contains("height=\"450\""))
+        #expect(r.svg.contains("id=\"Rim &amp; shadow\""), "layer names must be escaped and present")
+        // stop-color must be opaque hex; alpha belongs in stop-opacity.
+        #expect(r.svg.range(of: "#[0-9A-F]{8}", options: .regularExpression) == nil)
+        #expect(r.svg.filter { $0 == "<" }.count == r.svg.filter { $0 == ">" }.count)
+    }
+
+    @Test("A stepped ladder round-trips exactly; a points field is flagged, not faked")
+    func fidelity() {
+        // Stepped bands are one of the few things SVG expresses exactly.
+        let ladder = Wallpaper(background: .ladder([.init(hex: "#FF0000")!, .init(hex: "#0000FF")!], count: 4))
+        let a = SVGExport.export(ladder, width: 400, height: 400, grain: false)
+        #expect(a.isExact, "a stepped ladder should need no notes, got: \(a.notes)")
+        #expect(a.svg.contains("linearGradient"))
+
+        // A points background cannot be exact, and must SAY so.
+        var pts = Wallpaper(background: .points([.init(hex: "#FF0000")!, .init(hex: "#00FF00")!]))
+        pts.effects.grain = .none
+        let b = SVGExport.export(pts, width: 400, height: 400, grain: false)
+        #expect(!b.isExact)
+        #expect(b.notes.contains { $0.contains("Points background approximated") })
+        #expect(b.svg.contains("radialGradient"))
+
+        // A procedural field layer must be reported MISSING, never silently dropped.
+        var cloth = Wallpaper(background: .solid(.black))
+        cloth.effects.grain = .none
+        cloth.layers = [Layer(name: "Satin", shape: .cloth(offset: [0.5, 0.5], angle: -90, folds: 4, drape: 0.3, octaves: 3),
+                              spread: 2, ramp: [RampStop(-1, .black), RampStop(1, .white)])]
+        let c = SVGExport.export(cloth, width: 200, height: 200, grain: false)
+        #expect(c.notes.contains { $0.contains("MISSING") })
+    }
+
+    @Test("Every motif exports without throwing or producing empty output")
+    func allMotifs() {
+        for motif in Motif.allCases {
+            let w = Wallpaper.generate(motif, seed: 11, aspect: 16.0 / 9.0)
+            let r = SVGExport.export(w, width: 640, height: 360)
+            #expect(r.svg.count > 200, "\(motif) produced a stub")
+            #expect(r.svg.hasSuffix("</svg>"), "\(motif) is truncated")
+        }
+    }
+}
+
+@Suite("Colour readouts")
+struct ReadoutTests {
+    @Test("CMYK, P3 and WCAG grades agree with their definitions")
+    func readouts() {
+        // Pure red: no cyan, full magenta and yellow, no black.
+        let red = RGBA(hex: "#FF0000")!
+        let (c, m, y, k) = red.cmyk
+        #expect(c == 0 && m == 100 && y == 100 && k == 0)
+        #expect(RGBA.black.cmyk.k == 100)
+        // sRGB is inside P3, so the same colour has smaller P3 numbers.
+        #expect(red.displayP3.r < 1.0 && red.displayP3.r > 0.9)
+        // White on white is 1:1; black on white is 21:1.
+        #expect(abs(RGBA.white.contrastRatio(with: .white) - 1) < 0.001)
+        #expect(abs(RGBA.black.contrastRatio(with: .white) - 21) < 0.001)
+        #expect(RGBA.black.contrastGrade(on: .white) == .aaa)
+        #expect(RGBA.white.contrastGrade(on: .white) == .fail)
+        #expect(RGBA.white.readableInk == .black && RGBA.black.readableInk == .white)
+        #expect(RGBA.ContrastGrade.aa.passesBodyText && !RGBA.ContrastGrade.aaLarge.passesBodyText)
+    }
+
+    @Test("Japanese palettes are distinct, in gamut and named")
+    func japanese() {
+        #expect(Palette.japanese.count == 7)
+        #expect(Set(Palette.japanese.map(\.name)).count == 7)
+        for p in Palette.japanese {
+            for c in p.colors { #expect(c.linear.isInGamut, "\(p.name) has an out-of-gamut colour") }
+            // The six roles must actually differ, or recipes collapse.
+            #expect(Set(p.colors.map(\.hexString)).count == 6, "\(p.name) has duplicate roles")
+        }
+        #expect(Palette.named("Sakura") != nil, "japanese palettes must resolve by name")
+        #expect(Palette.named("Iris") != nil, "curated palettes must still resolve")
+        #expect(Palette.builtIn.count == Palette.curated.count + Palette.japanese.count)
+    }
+
+    @Test("Social and device sizes are sane")
+    func sizes() {
+        #expect(Resolution.social.count >= 8)
+        #expect(Resolution.post.aspect == 1)
+        #expect(abs(Resolution.story.aspect - 9.0 / 16.0) < 0.001)
+        #expect(Resolution.story.isPortrait)
+        #expect(abs(Resolution.portrait45.aspect - 4.0 / 5.0) < 0.001)
+        for r in Resolution.all { #expect(r.width > 0 && r.height > 0, "\(r.name)") }
     }
 }
 
@@ -566,10 +565,65 @@ struct ClipTests {
 struct CurationTests {
     @Test("Featured motifs are colour fields, judged by eye, and nothing else")
     func featured() {
-        #expect(Motif.featured == [.holo, .mesh, .aurora, .nebula, .classic])
+        #expect(Motif.featured == [.flow, .smesh, .holo, .mesh, .aurora, .nebula, .silk, .classic])
         let allFeatured = Motif.featured.allSatisfy(\.isFeatured)
         #expect(allFeatured)
         #expect(!Motif.eclipse.isFeatured)
+    }
+
+    @Test("The point, conic and lattice primitives render what they claim")
+    func primitives() throws {
+        let r = try WallpaperRenderer()
+        func pixel(_ img: CGImage, _ x: Int, _ y: Int) -> (r: Int, g: Int, b: Int) {
+            let data = img.dataProvider!.data! as Data
+            let i = y * img.bytesPerRow + x * 4
+            return (Int(data[i]), Int(data[i + 1]), Int(data[i + 2]))
+        }
+        // A points background is exactly its point's colour AT the point, and
+        // the other colour at the other point — that is what IDW guarantees.
+        var w = Wallpaper(background: .points([
+            MeshPoint(position: [0.25, 0.5], color: .init(hex: "#FF0000")!),
+            MeshPoint(position: [0.75, 0.5], color: .init(hex: "#0000FF")!),
+        ]))
+        w.effects.grain = .none
+        var img = try r.render(w, width: 200, height: 100)
+        let left = pixel(img, 50, 50), right = pixel(img, 150, 50), mid = pixel(img, 100, 50)
+        #expect(left.r > 200 && left.b < 60)
+        #expect(right.b > 200 && right.r < 60)
+        // Halfway the two weights are equal, so neither colour dominates.
+        #expect(abs(mid.r - mid.b) < 40)
+
+        // Conic: opposite sides of the centre are different stops.
+        w.background = .conic([.init(hex: "#FF0000")!, .init(hex: "#00FF00")!, .init(hex: "#0000FF")!])
+        img = try r.render(w, width: 200, height: 200)
+        #expect(pixel(img, 100, 20) != pixel(img, 100, 180))
+
+        // Lattices tile: a shifted sample matches one cell over.
+        // Hexagons need an inset to leave gaps — at inset 0 they tile the
+        // plane exactly, which is correct but makes "did it tile?" untestable.
+        for shape in [Shape.hexagons(center: [0.5, 0.5], cell: 0.2, inset: 0.05, rotation: 0),
+                      Shape.discs(center: [0.5, 0.5], cell: [0.2, 0.2], radius: 0.07, rotation: 0,
+                                  stagger: 0, jitter: 0, scaleJitter: 0)] {
+            var t = Wallpaper(background: .solid(.black))
+            t.effects.grain = .none
+            t.layers = [Layer(shape: shape, spread: 0.03,
+                              ramp: [RampStop(-1, .white), RampStop(0, .white), RampStop(1, RGBA.white.with(alpha: 0))])]
+            let tile = try r.render(t, width: 200, height: 200)
+            var lit = 0
+            let data = tile.dataProvider!.data! as Data
+            for i in stride(from: 0, to: data.count, by: 4) where data[i] > 200 { lit += 1 }
+            #expect(lit > 300, "\(shape.kind) drew nothing")
+            #expect(lit < 200 * 200 * 3 / 4, "\(shape.kind) filled the frame")
+        }
+
+        // Cloth is a field, not an edge: it varies everywhere, no flat regions.
+        var cl = Wallpaper(background: .solid(.black))
+        cl.effects.grain = .none
+        cl.layers = [Layer(shape: .cloth(offset: [0.5, 0.5], angle: -90, folds: 5, drape: 0.3, octaves: 3),
+                           spread: 0.8, ramp: [RampStop(-1, .black), RampStop(1, .white)])]
+        let cimg = try r.render(cl, width: 160, height: 90)
+        let vals = (0..<160).map { pixel(cimg, $0, 45).r }
+        #expect(Set(vals).count > 30, "cloth is banding, not undulating")
     }
 
     @Test("Every motif has a blurb")

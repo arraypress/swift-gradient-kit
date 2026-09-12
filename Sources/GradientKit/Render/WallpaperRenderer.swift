@@ -52,7 +52,8 @@ public final class WallpaperRenderer: @unchecked Sendable {
     private let pipeline: MTLComputePipelineState
     private let rebuildPipeline: MTLComputePipelineState
     private let appendPipeline: MTLComputePipelineState
-    private let atlas: GlyphAtlas
+    /// Linear/clamp sampler for the liquify displacement map.
+    private let sampler: MTLSamplerState
     private let smearField = SmearField()
 
     /// Largest texture side this device will allocate. Any size up to this
@@ -64,7 +65,12 @@ public final class WallpaperRenderer: @unchecked Sendable {
         self.device = device
         guard let queue = device.makeCommandQueue() else { throw RenderError.noMetalDevice }
         self.commandQueue = queue
-        self.atlas = GlyphAtlas(device: device)
+        let sd = MTLSamplerDescriptor()
+        sd.minFilter = .linear; sd.magFilter = .linear; sd.mipFilter = .notMipmapped
+        sd.sAddressMode = .clampToEdge; sd.tAddressMode = .clampToEdge
+        sd.normalizedCoordinates = true
+        guard let sampler = device.makeSamplerState(descriptor: sd) else { throw RenderError.noMetalDevice }
+        self.sampler = sampler
         let options = MTLCompileOptions()
         options.mathMode = .fast
         let library: MTLLibrary
@@ -131,9 +137,6 @@ public final class WallpaperRenderer: @unchecked Sendable {
               let smearBuf = device.makeBuffer(bytes: scene.smears, length: MemoryLayout<GPUSmear>.stride * scene.smears.count)
         else { throw RenderError.gpuFailure("buffer allocation") }
 
-        guard let textures = atlas.textures(for: scene.glyphs), let sampler = atlas.sampler else {
-            throw RenderError.gpuFailure("glyph atlas")
-        }
         var globals = scene.globals
         // Liquify: keep a displacement map up to date (rebuild or append), then
         // the main pass samples it once per pixel.
@@ -149,8 +152,6 @@ public final class WallpaperRenderer: @unchecked Sendable {
         enc.setBuffer(layerBuf, offset: 0, index: 1)
         enc.setBuffer(stopBuf, offset: 0, index: 2)
         enc.setBuffer(smearBuf, offset: 0, index: 3)
-        enc.setTexture(textures.color, index: 1)
-        enc.setTexture(textures.sdf, index: 2)
         enc.setTexture(map, index: 3)
         enc.setSamplerState(sampler, index: 0)
 

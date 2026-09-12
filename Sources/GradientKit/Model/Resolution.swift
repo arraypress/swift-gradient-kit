@@ -55,6 +55,12 @@ public struct Resolution: Codable, Sendable, Equatable, Hashable, Identifiable {
 
     public static let story = Resolution("Story 9:16", 1080, 1920)
     public static let square = Resolution("Square", 2048, 2048)
+    public static let post = Resolution("Post 1:1", 1080, 1080)
+    public static let portrait45 = Resolution("Portrait 4:5", 1080, 1350)
+    public static let landscape = Resolution("Landscape 16:9", 1920, 1080)
+    public static let banner = Resolution("Banner 3:1", 1500, 500)
+    public static let openGraph = Resolution("Open Graph", 1200, 630)
+    public static let pin = Resolution("Pin 2:3", 1000, 1500)
     public static let preview = Resolution("Preview", 960, 540)
 
     public static let mac: [Resolution] = [
@@ -64,6 +70,8 @@ public struct Resolution: Codable, Sendable, Equatable, Hashable, Identifiable {
     public static let mobile: [Resolution] = [
         .iPhone, .iPhonePro, .iPhoneProMax, .iPadPro11, .iPadPro13, .iPadPro13Portrait, .appleWatch,
     ]
-    public static let social: [Resolution] = [.story, .square]
+    public static let social: [Resolution] = [
+        .post, .portrait45, .story, .landscape, .banner, .openGraph, .pin, .square,
+    ]
     public static let all: [Resolution] = mac + mobile + social
 }

@@ -58,26 +58,26 @@ file and a seed is a permanent address for a generated one.
 
 ## Styles it covers
 
-Soft rims and eclipses; planet-edge glows; pastel horizons; warped mesh
-gradients; noise fields (nebulae) and their contour lines (topographic
-maps); flowing ribbons; holographic hue sweeps; colour ladders and retro
-diagonal stripes (stepped ramps); palette swatch cards; and — with relief
-lighting, which turns the distance field into a lit height map — extruded
-chevron ridges, bevelled keycap tiles and glossy liquid blobs. A liquify
-brush (`Effects.smears`) pushes, swirls, pinches or bloats the picture like
-wet paint, and because the scene is analytic the strokes export at any size.
-Emoji (or a word) are shapes too: rasterised with CoreText, turned into an
-exact distance field, and tiled with per-cell jitter — so they take drop
-shadows, glows and 3-D relief like everything else (`glyph`, `glyphPattern`).
+Soft rims and eclipses; planet-edge glows; pastel horizons; **point-field
+mesh gradients** — free-floating colour points blended by inverse distance,
+warped and swirled, which is what a soft "mesh gradient" actually is —
+warped colour grids; conic sweeps; satin fold fields; honeycombs, sphere
+grids and out-of-focus bokeh; noise fields (nebulae) and their contour lines (topographic
+maps); flowing ribbons; holographic hue sweeps; light leaks and sunbursts;
+hazy ridges and dunes; colour ladders and retro diagonal stripes (stepped
+ramps). A liquify brush (`Effects.smears`) pushes, swirls, pinches or
+bloats the picture like wet paint, and because the scene is analytic the
+strokes export at any size.
 
 ## What's in the box
 
-- **Model** — `Wallpaper`, `Background` (solid / linear / radial / mesh,
-  optionally stepped), `Layer` with a `Shape` (circle, ellipse, line, wave,
-  ring, crescent, polygon, rect, capsule, stripes, chevrons, tiles, blob,
-  noise field), a signed-distance `ramp` (optionally stepped, repeating, or
-  hue-swept), `spread`, blend mode, opacity, noise `distortion`, one-sided
-  `lighting` and `relief` (height profile + directional light + specular);
+- **Model** — `Wallpaper`, `Background` (solid / linear / radial / conic /
+  mesh grid / **points**, optionally stepped), `Layer` with a `Shape`
+  (circle, ellipse, line, wave, ring, crescent, polygon, rect, capsule,
+  stripes, chevrons, tiles, hexagons, discs, blob, noise field, cloth,
+  rays), a signed-distance `ramp` (optionally stepped,
+  repeating, or hue-swept), `spread`, blend mode, opacity, noise
+  `distortion` and one-sided `lighting`;
   `Effects` (grain, vignette, domain warp, chromatic aberration, tone,
   liquify `smears`). Positions are canvas-normalised so one scene
   re-composes itself for any aspect ratio; lengths are in units of the
@@ -90,15 +90,31 @@ shadows, glows and 3-D relief like everything else (`glyph`, `glyphPattern`).
   16-bit output. A 5K frame renders in a few milliseconds; PNG encoding is
   the slow part.
 - **Colour** — `RGBA` with hex, OKLab and OKLCH in and out, gamut mapping by
-  chroma reduction (hue never shifts), OKLab mixing and adjustment.
+  chroma reduction (hue never shifts), OKLab mixing and adjustment. Readouts
+  for display and export: Display P3 (a real conversion), CMYK (naive
+  device ink, NOT a colour-managed separation), WCAG contrast ratios and
+  AA/AAA grades, and `readableInk` for a label that has to sit on a swatch.
+
+- **SVG export** — `SVGExport.export(_:width:height:)` writes real
+  `<linearGradient>`/`<radialGradient>` defs and one named `<g>` per layer,
+  so pasting into Figma gives editable layers. It is a TRANSLATION, not the
+  renderer: SVG has gradients along a line and gradients from a point and
+  nothing else, so a circle's ramp is exact, a points field is
+  approximated, and the noise and cloth fields have no vector form at all.
+  Every export returns `notes` listing what was approximated or dropped —
+  show them; an export that silently differs from the screen is the one
+  outcome worth engineering against.
 - **Palettes** — six roles (`base`, `baseAlt`, `accent`, `secondary`,
   `highlight`, `deep`) every recipe is written against; twelve curated
-  palettes lifted from reference wallpapers; OKLCH generation from a seed
+  palettes lifted from reference wallpapers, plus seven built from
+  traditional Japanese colour names (`Palette.japanese`: Ai, Akane, Koke,
+  Sakura, Murasaki, Sumi, Kaki); OKLCH generation from a seed
   with split-complement / analogous-clash / triad harmonies.
-- **Generator** — 36 motifs in seven families (soft, fields, surfaces,
-  scenes, textures, flat, fun), each a seeded recipe — from `eclipse` and
-  `horizon` through `liquid`, `keycaps`, `mountains`, `saturn`, `sunset`,
-  `marble`, `terrazzo` to `emoji` and `symbols`. `Wallpaper.recolored(to:)`
+- **Generator** — 28 motifs in five families (soft, fields, surfaces,
+  scenes, flat), each a seeded recipe — from `eclipse` and `horizon`
+  through `flow`, `smesh`, `silk`, `angular`, `aurora`, `holo`, `nebula`,
+  `beehive`, `orbs`, `bokeh`, `mountains`, `dunes` and `sunset` to `ladder`
+  and `retro`. `Wallpaper.recolored(to:)`
   re-dresses any scene in another palette without regenerating it. Every position, radius,
   spread, ramp and effect is jittered from the seed, so a motif is a family
   and a seed picks one member. `SeededRandom` is SplitMix64 with its own

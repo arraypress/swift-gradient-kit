@@ -12,10 +12,12 @@ import simd
 
 struct GPUStop {
     var lab: SIMD4<Float>      // L, a, b, alpha
+    /// Ramp position, or a `.points` background's weight.
     var position: Float
-    var pad0: Float = 0
-    var pad1: Float = 0
-    var pad2: Float = 0
+    /// `.points` only: the point's place in scene units. Unused otherwise.
+    var px: Float = 0
+    var py: Float = 0
+    var pad: Float = 0
 }
 
 struct GPUSmear {
@@ -29,9 +31,7 @@ struct GPULayer {
     var p2: SIMD4<Float> = .zero
     var p3: SIMD4<Float> = .zero
     var p4: SIMD4<Float> = .zero
-    var p5: SIMD4<Float> = .zero
-    var p6: SIMD4<Float> = .zero
-    var p7: SIMD4<Float> = .zero
+    var p5: SIMD4<Float> = .zero   // shape extras + stepped(w)
     var p8: SIMD4<Float> = .zero   // clip: cx, cy, halfW, halfH
     var p9: SIMD4<Float> = .zero   // clip: kind (0 none, 1 circle/ellipse, 2 rect), rotation, feather, inverted
     var kind: Int32 = 0
@@ -69,29 +69,8 @@ public struct GPUScene {
     var layers: [GPULayer]
     var stops: [GPUStop]
     var smears: [GPUSmear]
-    /// Distinct glyphs in slice order (empty when the scene uses none).
-    var glyphs: [String]
-
-    /// Every glyph the scene draws, in first-use order, capped to the atlas.
-    static func glyphList(for w: Wallpaper) -> [String] {
-        var seen: [String] = []
-        for layer in w.layers where layer.isEnabled {
-            guard let text = layer.shape.glyphText else { continue }
-            for g in text.glyphs where !seen.contains(g) { seen.append(g) }
-        }
-        return Array(seen.prefix(GlyphAtlas.maxSlices))
-    }
 
     public init(_ w: Wallpaper, width: Int, height: Int, ditherStep: Float) {
-        let glyphs = GPUScene.glyphList(for: w)
-        func slices(for text: String) -> (Int32, Int32) {
-            let mine = text.glyphs.compactMap { g in glyphs.firstIndex(of: g) }
-            guard let first = mine.first else { return (0, 1) }
-            // Slices for one text are contiguous only if it was seen first; use its run from `first`.
-            var count = 1
-            while count < mine.count, mine[count] == first + count { count += 1 }
-            return (Int32(first), Int32(count))
-        }
         let size = SIMD2<Float>(Float(width), Float(height))
         let minSide = Float(min(width, height))
         var g = GPUGlobals()
@@ -126,8 +105,23 @@ public struct GPUScene {
         case .linear: g.bgKind = 1
         case .radial: g.bgKind = 2
         case .mesh: g.bgKind = 3
+        case .points: g.bgKind = 4
+        case .conic: g.bgKind = 5
         }
-        if bg.kind == .mesh {
+        if bg.kind == .points {
+            let pts = Array(bg.points.prefix(Wallpaper.maxStops))
+            g.bgStopOffset = Int32(stops.count)
+            for pt in pts {
+                let lab = pt.color.oklab
+                let p = scene(pt.position)
+                stops.append(GPUStop(lab: SIMD4<Float>(Float(lab.l), Float(lab.a), Float(lab.b), Float(pt.color.a)),
+                                     position: Float(max(0, pt.weight)), px: p.x, py: p.y))
+            }
+            g.bgStopCount = Int32(pts.count)
+            // x: the inverse-distance exponent, applied to squared distance.
+            // y: swirl in radians per scene unit from the centre.
+            g.bgMesh = SIMD4<Float>(Float(max(0.05, bg.mixing)), Float(bg.swirl), 0, 0)
+        } else if bg.kind == .mesh {
             // Mesh colours keep their row-major order (push() sorts by position).
             let cols = max(1, bg.meshColumns), rows = max(1, bg.meshRows)
             let cells = Array(bg.stops.prefix(cols * rows))
@@ -222,36 +216,34 @@ public struct GPUScene {
                 L.p0 = SIMD4<Float>(c.x, c.y, Float(cell.x), Float(cell.y))
                 L.p1 = SIMD4<Float>(rad(rotation), 0, 0, 0)
                 L.p5 = SIMD4<Float>(Float(inset), Float(cornerRadius), Float(stagger), 0)
-            case let .glyph(text, center, size, rotation):
-                L.kind = 14
-                let c = scene(center)
-                let (offset, count) = slices(for: text)
-                L.p0 = SIMD4<Float>(c.x, c.y, 0, 0)
-                L.p1 = SIMD4<Float>(rad(rotation), Float(size), 0, 0)
-                L.p5 = SIMD4<Float>(0, 0, Float(offset), Float(count))
             case let .rays(center, count, rotation, width):
-                L.kind = 16
+                L.kind = 14
                 let c = scene(center)
                 L.p0 = SIMD4<Float>(c.x, c.y, 0, 0)
                 L.p1 = SIMD4<Float>(rad(rotation), Float(max(1, count)), Float(max(0, min(width, 1))), 0)
-            case let .glyphPattern(text, center, cell, size, rotation, stagger, jitter, rotationJitter, scaleJitter):
+            case let .hexagons(center, cell, inset, rotation):
                 L.kind = 15
                 let c = scene(center)
-                let (offset, count) = slices(for: text)
-                L.p0 = SIMD4<Float>(c.x, c.y, Float(cell.x), Float(cell.y))
-                L.p1 = SIMD4<Float>(rad(rotation), Float(size), Float(stagger), Float(jitter))
-                L.p5 = SIMD4<Float>(rad(rotationJitter), Float(scaleJitter), Float(offset), Float(count))
+                L.p0 = SIMD4<Float>(c.x, c.y, Float(max(cell, 1e-3)), 0)
+                L.p1 = SIMD4<Float>(rad(rotation), Float(max(0, inset)), 0, 0)
+            case let .discs(center, cell, radius, rotation, stagger, jitter, scaleJitter):
+                L.kind = 16
+                let c = scene(center)
+                L.p0 = SIMD4<Float>(c.x, c.y, Float(max(cell.x, 1e-3)), Float(max(cell.y, 1e-3)))
+                L.p1 = SIMD4<Float>(rad(rotation), Float(max(1e-4, radius)), Float(stagger), Float(max(0, jitter)))
+                L.p5.x = Float(max(0, min(scaleJitter, 0.95)))
+            case let .cloth(offset, angle, folds, drape, octaves):
+                L.kind = 17
+                let c = scene(offset)
+                L.p0 = SIMD4<Float>(c.x, c.y, 0, 0)
+                L.p1 = SIMD4<Float>(rad(angle), Float(max(0.1, folds)), Float(drape), Float(max(1, min(octaves, 6))))
             }
-            L.p2.x = layer.shape.glyphText == nil ? L.p2.x : Float(max(0, min(layer.glyphColor, 1)))
             if let clip = layer.clip {
                 let cc = scene(clip.center)
                 L.p8 = SIMD4<Float>(cc.x, cc.y, Float(max(clip.size.x, 1e-4) / 2), Float(max(clip.size.y, 1e-4) / 2))
                 L.p9 = SIMD4<Float>(clip.kind == .circle ? 1 : 2, rad(clip.rotation), Float(max(clip.feather, 1e-4)), clip.inverted ? 1 : 0)
             }
-            let r = layer.relief
-            let profile: Float = r.profile == .dome ? 0 : (r.profile == .bevel ? 1 : 2)
-            L.p6 = SIMD4<Float>(Float(max(0, r.height)), profile, rad(r.lightAngle), rad(max(1, min(r.lightElevation, 89))))
-            L.p7 = SIMD4<Float>(Float(r.gloss), Float(r.shininess), Float(r.ambient), layer.stepped ? 1 : 0)
+            L.p5.w = layer.stepped ? 1 : 0
             L.p2.y = Float(layer.distortion.amount)
             L.p2.z = Float(layer.distortion.scale)
             L.p2.w = Float(max(1, min(layer.distortion.octaves, 6)))
@@ -319,6 +311,5 @@ public struct GPUScene {
         self.layers = layers
         self.stops = stops
         self.smears = smears
-        self.glyphs = glyphs
     }
 }
