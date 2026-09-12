@@ -460,7 +460,7 @@ struct ClipTests {
         // 4 rays of half width: centred on 0°, 90°, 180°, 270°; gaps at 45° etc.
         #expect(pixel(img, 90, 50) > 250)          // 0°
         #expect(pixel(img, 80, 20) < 3)            // ~ -56°: in a gap
-        for motif in [Motif.sunset, .mountains, .rays] { _ = try r.render(Wallpaper.generate(motif, seed: 3), width: 96, height: 54) }
+        for motif in [Motif.holo, .aurora, .classic] { _ = try r.render(Wallpaper.generate(motif, seed: 3), width: 96, height: 54) }
     }
 }
 
@@ -553,7 +553,7 @@ struct ReadoutTests {
         for family in [Palette.curated, Palette.japanese, Palette.vivid] {
             for p in family { #expect(store.item(named: p.name) != nil, "\(p.name) missing from the default store") }
         }
-        #expect(Palette.builtIn.count == Palette.curated.count + Palette.japanese.count + Palette.vivid.count)
+        #expect(Palette.builtIn.count == Palette.curated.count + Palette.japanese.count + Palette.vivid.count + Palette.spectra.count)
         // Names must be unique across the whole built-in set, or `named()`
         // silently resolves to whichever family happens to come first.
         #expect(Set(Palette.builtIn.map(\.name)).count == Palette.builtIn.count)
@@ -576,16 +576,16 @@ struct ReadoutTests {
         }
     }
 
-    @Test("Spectra ramps run light to dark and are named uniquely") 
+    @Test("Spectra palettes keep the pale-to-deep run they were built from")
     func spectra() {
-        #expect(GradientPreset.spectra.count == 17)
+        #expect(Palette.spectra.count == 17)
         #expect(Set(GradientPreset.defaults.map(\.name)).count == GradientPreset.defaults.count)
-        for g in GradientPreset.spectra {
-            #expect(g.stops.count == 5, "\(g.name)")
-            // "Layered Dark" deliberately starts dark; the rest start pale.
-            if g.name != "Layered Dark" {
-                #expect(g.stops.first!.color.luminance > g.stops.last!.color.luminance, "\(g.name)")
-            }
+        for p in Palette.spectra {
+            // The ordering is the whole point of the mapping: palest becomes
+            // the highlight, darkest the ground.
+            #expect(p.highlight.luminance > p.accent.luminance, "\(p.name)")
+            #expect(p.deep.luminance < p.accent.luminance, "\(p.name)")
+            for c in p.colors { #expect(c.linear.isInGamut, "\(p.name)") }
         }
     }
 
@@ -663,6 +663,64 @@ struct CurationTests {
         let cimg = try r.render(cl, width: 160, height: 90)
         let vals = (0..<160).map { pixel(cimg, $0, 45).r }
         #expect(Set(vals).count > 30, "cloth is banding, not undulating")
+    }
+
+    @Test("Changing a background's kind never loses its colours")
+    func kindConversion() {
+        let colours = ["#FF0000", "#00FF00", "#0000FF", "#FFFF00"].map { RGBA(hex: $0)! }
+        for from in Background.Kind.allCases {
+            // Build one of each kind carrying the same four colours.
+            var start = Background.linear(colours)
+            start = start.converted(to: from)
+            for to in Background.Kind.allCases {
+                let out = start.converted(to: to)
+                let got = out.kind == .points ? out.points.map(\.color) : out.stops.map(\.color)
+                #expect(!got.isEmpty, "\(from) → \(to) lost every colour")
+                if from != .solid && to != .solid {
+                    #expect(got.count >= min(colours.count, 2), "\(from) → \(to) kept only \(got.count)")
+                }
+            }
+        }
+        // The specific case that was broken: a ramp to a point field.
+        let pts = Background.linear(colours).converted(to: .points)
+        #expect(pts.points.count == colours.count)
+        #expect(Set(pts.points.map(\.color.hexString)) == Set(colours.map(\.hexString)))
+        // And back again — losslessly. A round trip must return the exact
+        // stops you started with, not evenly respaced ones.
+        var uneven = Background.linear(colours)
+        uneven.stops = [RampStop(0, colours[0]), RampStop(0.1, colours[1]),
+                        RampStop(0.15, colours[2]), RampStop(1, colours[3])]
+        // EVERY kind must round-trip losslessly, not just points. Solid
+        // renders one stop and mesh ignores positions, but neither should
+        // throw away what it does not read.
+        for via in Background.Kind.allCases where via != .linear {
+            let round = uneven.converted(to: via).converted(to: .linear)
+            #expect(round.stops.map(\.position) == uneven.stops.map(\.position),
+                    "a round trip through \(via) flattened the stop positions")
+            #expect(round.stops.map(\.color.hexString) == uneven.stops.map(\.color.hexString),
+                    "a round trip through \(via) changed the colours")
+        }
+    }
+
+    @Test("Random liquify strokes are continuous, not scattered pokes")
+    func randomStrokes() {
+        let a = Smear.randomStrokes(count: 3, seed: 42)
+        #expect(a == Smear.randomStrokes(count: 3, seed: 42), "same seed must give the same strokes")
+        #expect(a != Smear.randomStrokes(count: 3, seed: 43))
+        #expect(a.count > 20, "three strokes should be many overlapping smears, got \(a.count)")
+        #expect(a.count <= Effects.maxSmears)
+
+        // The property that makes it read as one gesture: consecutive
+        // smears overlap. A gap wider than a brush radius is a row of dents.
+        var breaks = 0
+        for (x, y) in zip(a, a.dropFirst()) {
+            let d = ((x.position.x - y.position.x) * (x.position.x - y.position.x)
+                   + (x.position.y - y.position.y) * (x.position.y - y.position.y)).squareRoot()
+            if d > x.radius { breaks += 1 }
+        }
+        // One break per stroke boundary is expected; many more is a scatter.
+        #expect(breaks <= 3, "\(breaks) gaps between smears — the strokes are not continuous")
+        #expect(a.allSatisfy { $0.radius > 0 && $0.strength > 0 })
     }
 
     @Test("Every motif has a blurb")

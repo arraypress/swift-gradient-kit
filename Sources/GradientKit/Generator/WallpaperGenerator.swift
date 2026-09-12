@@ -25,6 +25,8 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
     case halo
     /// Warped, overlapping colour fields — the loosest of the set.
     case aurora
+    /// Jagged ridges receding into haze.
+    case mountains
     /// A warped colour grid — the classic mesh gradient.
     case mesh
     /// Colour points blended by inverse distance, warped and swirled — the
@@ -37,34 +39,14 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
     case silk
     /// Colour swept around a centre.
     case angular
-    /// A lit honeycomb over a colour field.
-    case beehive
-    /// A grid of soft spheres.
-    case orbs
-    /// Out-of-focus discs of light.
-    case bokeh
     /// Contour lines of a noise field over a dark ground — a topographic map.
     case topo
-    /// Flowing stripes bent by noise, like ribbons of light.
-    case ribbons
     /// A noise field mapped through the palette — clouds and nebulae.
     case nebula
     /// Hue that sweeps across a soft edge — holographic foil.
     case holo
     /// Flat colour bands stepping through a ramp — the colour ladder.
     case ladder
-    /// Hard diagonal stripes between two flat fields — retro racing stripes.
-    case retro
-    /// Light leaks: soft beams across a dark ground.
-    case beams
-    /// A sunburst behind a soft glow.
-    case rays
-    /// Jagged ridges receding into haze.
-    case mountains
-    /// Smooth stacked dunes.
-    case dunes
-    /// A striped sun over a gradient sky.
-    case sunset
     /// A plain two- or three-colour diagonal gradient with grain.
     case classic
     /// A planet's edge: a bright curved horizon over a dark sky.
@@ -90,11 +72,10 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
 
     public var family: Family {
         switch self {
-        case .eclipse, .orb, .horizon, .hill, .crescent, .halo, .glow, .classic, .beams, .rays, .bokeh: .soft
-        case .aurora, .mesh, .nebula, .topo, .holo, .ribbons, .flow, .smesh, .silk, .angular: .fields
-        case .beehive, .orbs: .surfaces
-        case .mountains, .dunes, .sunset: .scenes
-        case .ladder, .retro: .flat
+        case .eclipse, .orb, .horizon, .hill, .crescent, .halo, .glow, .classic: .soft
+        case .aurora, .mesh, .nebula, .topo, .holo, .flow, .smesh, .silk, .angular: .fields
+        case .mountains: .scenes
+        case .ladder: .flat
         }
     }
 
@@ -106,13 +87,10 @@ public enum Motif: String, Codable, Sendable, CaseIterable, Identifiable {
     /// The palette mood the recipe was designed around.
     public var preferredMood: Palette.Mood {
         switch self {
-        case .eclipse, .hill, .halo, .aurora, .topo, .nebula: .dark
-        case .orb, .ribbons, .holo, .glow, .classic: .dark
+        case .eclipse, .hill, .halo, .aurora, .topo, .nebula, .mountains: .dark
+        case .orb, .holo, .glow, .classic: .dark
         case .flow, .smesh, .silk, .angular: .light
-        case .beehive, .orbs, .bokeh: .dark
-        case .horizon, .crescent, .mesh, .ladder, .retro: .light
-        case .beams, .rays, .mountains: .dark
-        case .dunes, .sunset: .light
+        case .horizon, .crescent, .mesh, .ladder: .light
         }
     }
 }
@@ -141,25 +119,16 @@ public struct WallpaperGenerator: Sendable {
         case .crescent: wallpaper = recipe.crescent()
         case .halo: wallpaper = recipe.halo()
         case .aurora: wallpaper = recipe.aurora()
+        case .mountains: wallpaper = recipe.mountains()
         case .mesh: wallpaper = recipe.mesh()
         case .flow: wallpaper = recipe.flow()
         case .smesh: wallpaper = recipe.smesh()
         case .silk: wallpaper = recipe.silk()
         case .angular: wallpaper = recipe.angular()
-        case .beehive: wallpaper = recipe.beehive()
-        case .orbs: wallpaper = recipe.orbs()
-        case .bokeh: wallpaper = recipe.bokeh()
         case .topo: wallpaper = recipe.topo()
-        case .ribbons: wallpaper = recipe.ribbons()
         case .nebula: wallpaper = recipe.nebula()
         case .holo: wallpaper = recipe.holo()
         case .ladder: wallpaper = recipe.ladder()
-        case .retro: wallpaper = recipe.retro()
-        case .beams: wallpaper = recipe.beams()
-        case .rays: wallpaper = recipe.rays()
-        case .mountains: wallpaper = recipe.mountains()
-        case .dunes: wallpaper = recipe.dunes()
-        case .sunset: wallpaper = recipe.sunset()
         case .classic: wallpaper = recipe.classic()
         case .glow: wallpaper = recipe.glow()
         }
@@ -751,78 +720,6 @@ struct Recipe {
 
     // MARK: Beehive / Orbs — lattices
 
-    mutating func beehive() -> Wallpaper {
-        let cell = d(0.055...0.12)
-        let background = Background.points([drift(p.deep), drift(p.accent), drift(p.secondary), drift(p.base)],
-                                           mixing: d(0.8...1.2))
-        let comb = Layer(name: "Honeycomb",
-                         shape: .hexagons(center: [0.5, 0.5], cell: cell, inset: cell * d(0.04...0.1),
-                                          rotation: chance(0.5) ? 0 : 30),
-                         spread: cell * d(0.35...0.6),
-                         ramp: [RampStop(-1, drift(p.highlight).with(alpha: d(0.16...0.34))),
-                                RampStop(-0.2, drift(p.base).with(alpha: 0.06)),
-                                RampStop(0, drift(p.deep).with(alpha: d(0.4...0.7))),
-                                RampStop(0.8, drift(p.deep).with(alpha: 0))],
-                         opacity: d(0.6...0.95),
-                         smoothing: 1,
-                         lighting: Lighting(angle: d(-160...(-20)), amount: d(0.3...0.6)))
-        var w = Wallpaper(background: background, layers: [comb],
-                          effects: effects(vignette: d(0.15...0.35), warp: 0, aberration: 0))
-        w.effects.grain.intensity = d(0.04...0.08)
-        return w
-    }
-
-    mutating func orbs() -> Wallpaper {
-        let cell = d(0.1...0.2)
-        let background = Background.linear([drift(p.deep), drift(p.base).mixed(with: drift(p.accent), 0.25)],
-                                           angle: d(0...360), smoothing: 0.5)
-        let grid = Layer(name: "Spheres",
-                         shape: .discs(center: [0.5, 0.5], cell: [cell, cell * d(0.92...1.08)],
-                                       radius: cell * d(0.3...0.42), rotation: chance(0.4) ? d(-20...20) : 0,
-                                       stagger: chance(0.7) ? 0.5 : 0, jitter: 0, scaleJitter: chance(0.4) ? d(0.05...0.18) : 0),
-                         spread: cell * d(0.3...0.55),
-                         ramp: [RampStop(-1, drift(p.highlight)),
-                                RampStop(-0.35, drift(p.accent)),
-                                RampStop(0, drift(p.secondary).with(alpha: 0.85)),
-                                RampStop(0.7, drift(p.accent).with(alpha: 0))],
-                         blend: .screen, opacity: d(0.65...0.95), smoothing: 1,
-                         lighting: Lighting(angle: d(-150...(-30)), amount: d(0.35...0.7)))
-        var w = Wallpaper(background: background, layers: [grid],
-                          effects: effects(vignette: d(0.15...0.4), warp: 0, aberration: chance(0.3) ? d(0.5...1.5) : 0))
-        w.effects.grain.intensity = d(0.04...0.08)
-        return w
-    }
-
-    mutating func bokeh() -> Wallpaper {
-        let deep = drift(p.deep), base = drift(p.base)
-        let accent = drift(p.accent), secondary = drift(p.secondary), highlight = drift(p.highlight)
-        let background = Background.linear([deep, base.mixed(with: accent, 0.2)], angle: d(0...360), smoothing: 0.5)
-        // Three passes at different sizes: the big ones sit behind, softest.
-        func field(_ color: RGBA, cell: Double, radius: Double, opacity: Double, softness: Double) -> Layer {
-            Layer(name: "Bokeh",
-                  shape: .discs(center: [0.5 + jit(0.1), 0.5 + jit(0.1)],
-                                cell: [cell, cell * d(0.85...1.15)], radius: radius,
-                                rotation: d(0...360), stagger: 0.5,
-                                jitter: d(0.35...0.55), scaleJitter: d(0.3...0.6)),
-                  spread: radius * softness,
-                  ramp: [RampStop(-1, color.with(alpha: 0.55)), RampStop(-0.25, color.with(alpha: 0.9)),
-                         RampStop(0, color.with(alpha: 0.7)), RampStop(0.7, color.with(alpha: 0))],
-                  blend: .screen, opacity: opacity, smoothing: 1)
-        }
-        let layers = [
-            field(secondary.mixed(with: base, 0.3), cell: d(0.45...0.7), radius: d(0.09...0.15),
-                  opacity: d(0.25...0.45), softness: d(1.2...2.0)),
-            field(accent, cell: d(0.3...0.45), radius: d(0.04...0.08), opacity: d(0.4...0.7), softness: d(0.8...1.4)),
-            field(highlight, cell: d(0.18...0.3), radius: d(0.015...0.035), opacity: d(0.5...0.9), softness: d(0.5...1.0)),
-        ]
-        var w = Wallpaper(background: background, layers: layers,
-                          effects: effects(vignette: d(0.2...0.4), warp: 0, aberration: chance(0.7) ? d(1...3) : 0))
-        w.effects.grain.intensity = d(0.05...0.09)
-        return w
-    }
-
-    // MARK: Topo
-
     mutating func topo() -> Wallpaper {
         let deep = drift(p.deep)
         let base = drift(p.base)
@@ -869,45 +766,6 @@ struct Recipe {
 
     // MARK: Ribbons
 
-    mutating func ribbons() -> Wallpaper {
-        let deep = drift(p.deep)
-        let base = drift(p.base)
-        let accent = drift(p.accent)
-        let secondary = drift(p.secondary)
-        let highlight = drift(p.highlight)
-        let background = Background.linear([deep, base], angle: 90 + jit(30), smoothing: 0.5)
-        let angle = 90 + jit(35)
-        let period = d(0.16...0.3)
-        let through: Vec2 = [0.5, 0.5]
-        let ribbons = Layer(name: "Ribbons",
-                            shape: .stripes(through: through, angle: angle, period: period, width: period * d(0.3...0.5), bend: d(-0.3...0.3)),
-                            spread: period * d(0.15...0.3),
-                            ramp: [
-                                RampStop(-1.5, highlight.mixed(with: accent, 0.4)),
-                                RampStop(-0.6, accent),
-                                RampStop(0, accent.adjusted(lightness: -0.15)),
-                                RampStop(0.6, secondary.with(alpha: 0.5)),
-                                RampStop(1.8, base.with(alpha: 0)),
-                            ],
-                            opacity: d(0.75...1),
-                            smoothing: 1,
-                            distortion: Distortion(amount: d(0.08...0.2), scale: d(0.6...1.2), octaves: 3))
-        let counter = Layer(name: "Counter ribbons",
-                            shape: .stripes(through: [0.5, 0.5], angle: angle + jit(25), period: period * d(1.3...2), width: period * d(0.2...0.35), bend: d(-0.2...0.2)),
-                            spread: period * d(0.2...0.4),
-                            ramp: [RampStop(-1.2, secondary), RampStop(0, secondary.mixed(with: base, 0.3)), RampStop(1.5, base.with(alpha: 0))],
-                            blend: .screen,
-                            opacity: d(0.3...0.6),
-                            smoothing: 1,
-                            distortion: Distortion(amount: d(0.1...0.25), scale: d(0.5...1), octaves: 3))
-        var w = Wallpaper(background: background, layers: [counter, ribbons],
-                          effects: effects(vignette: d(0.1...0.3), warp: d(0.02...0.06), aberration: chance(0.4) ? d(0.5...1.5) : 0))
-        w.effects.grain.intensity = d(0.05...0.08)
-        return w
-    }
-
-    // MARK: Prism
-
     mutating func nebula() -> Wallpaper {
         let deep = drift(p.deep)
         let base = drift(p.base)
@@ -944,6 +802,35 @@ struct Recipe {
         var w = Wallpaper(background: background, layers: [clouds, wisps, star],
                           effects: effects(vignette: d(0.2...0.4), warp: d(0.02...0.06), aberration: chance(0.5) ? d(0.5...1.5) : 0))
         w.effects.grain.intensity = d(0.06...0.1)
+        return w
+    }
+
+    // MARK: Mountains
+
+    mutating func mountains() -> Wallpaper {
+        let deep = drift(p.deep), base = drift(p.base), accent = drift(p.accent), secondary = drift(p.secondary), highlight = drift(p.highlight)
+        // Sky: light near the horizon, dark above.
+        let background = Background.linear([highlight.mixed(with: accent, 0.35), accent.mixed(with: base, 0.5), base, deep], angle: -90 + jit(10), smoothing: 0.4)
+        var layers: [Layer] = []
+        let ridges = rng.int(in: 4...6)
+        for i in 0..<ridges {
+            let t = Double(i) / Double(ridges - 1)          // 0 = far, 1 = near
+            let y = d(0.38...0.5) + t * d(0.35...0.45)
+            let colour = deep.mixed(with: base.mixed(with: accent, 0.4), (1 - t) * 0.85)   // far ridges lift into the haze
+            layers.append(Layer(name: "Ridge \(i + 1)",
+                                shape: .line(through: [0.5, y], angle: -90, bend: jit(0.15)),
+                                spread: d(0.01...0.03),
+                                ramp: [RampStop(-1, colour), RampStop(0, colour), RampStop(1, colour.with(alpha: 0))],
+                                smoothing: 1,
+                                distortion: Distortion(amount: d(0.06...0.14) * (0.5 + t * 0.7), scale: d(1.2...2.4), octaves: rng.int(in: 3...5))))
+        }
+        let sun = Layer(name: "Sun", shape: .circle(center: [d(0.25...0.75), d(0.25...0.42)], radius: d(0.04...0.1)), spread: d(0.2...0.4),
+                        ramp: [RampStop(-1, highlight), RampStop(0, highlight.mixed(with: accent, 0.3)), RampStop(1.2, accent.with(alpha: 0))],
+                        blend: .screen, opacity: d(0.5...0.9))
+        var w = Wallpaper(background: background, layers: [sun] + layers,
+                          effects: effects(vignette: d(0...0.2), warp: 0, aberration: 0))
+        w.effects.grain.intensity = d(0.04...0.08)
+        w.effects.grain.chroma = 0.1
         return w
     }
 
@@ -1012,40 +899,6 @@ struct Recipe {
 
     // MARK: Retro
 
-    mutating func retro() -> Wallpaper {
-        let retros = GradientPreset.defaults.filter { $0.name.hasPrefix("Retro") }
-        var bands: [RGBA]
-        if chance(0.6) {
-            bands = rng.pick(retros).colors.map { $0.adjusted(lightness: jit(0.02), hue: jit(5)) }
-        } else {
-            // From the palette: dark field, two mid tones, a cream, two warm tones, a saturated field.
-            bands = [drift(p.deep), drift(p.base), drift(p.secondary), drift(p.highlight),
-                     drift(p.accent, l: 0.12), drift(p.accent), drift(p.accent, l: -0.1)]
-            if chance(0.5) { bands.reverse() }
-        }
-        let width = d(0.035...0.06)
-        let angle = (chance(0.5) ? -30 : -150) + jit(12)
-        let inner = bands.count - 1
-        // First and last colours are the two big fields; the rest are stripes across the middle.
-        let through: Vec2 = [0.5 + jit(0.08), 0.5 + jit(0.08)]
-        var stops: [RampStop] = []
-        let start = -width * Double(inner - 1) / 2
-        for (i, c) in bands.enumerated() {
-            stops.append(RampStop(i == 0 ? -10 : start + width * Double(i - 1), c))
-        }
-        let stripes = Layer(name: "Stripes",
-                            shape: .line(through: through, angle: angle, bend: chance(0.3) ? d(-0.15...0.15) : 0),
-                            spread: 1,
-                            ramp: stops,
-                            stepped: true)
-        var w = Wallpaper(background: .solid(bands[0]), layers: [stripes],
-                          effects: effects(vignette: 0, warp: 0, aberration: 0))
-        w.effects.grain = Grain(intensity: d(0.0...0.025), size: 1, chroma: 0.1, shadowBias: 0)
-        return w
-    }
-
-    // MARK: Chevron
-
     mutating func classic() -> Wallpaper {
         let dark = chance(0.7)
         let angle = (chance(0.5) ? -40 : 140) + jit(20)
@@ -1087,134 +940,5 @@ struct Recipe {
         w.effects.grain.intensity = d(0.05...0.09)
         return w
     }
-
-    mutating func beams() -> Wallpaper {
-        let deep = drift(p.deep), base = drift(p.base), accent = drift(p.accent), secondary = drift(p.secondary), highlight = drift(p.highlight)
-        let background = Background.linear([deep, base], angle: d(0...360), smoothing: 0.5)
-        var layers: [Layer] = []
-        let count = rng.int(in: 2...4)
-        let angle = d(-60...(-20))
-        for i in 0..<count {
-            let c = [accent, secondary, highlight, accent.adjusted(hue: 30)][i % 4]
-            let rad = (angle + jit(12)) * .pi / 180
-            let mid: Vec2 = [d(0.1...0.9), d(0.1...0.9)]
-            let len = d(0.8...1.6)
-            layers.append(Layer(name: "Beam \(i + 1)",
-                                shape: .capsule(from: [mid.x - cos(rad) * len, mid.y - sin(rad) * len], to: [mid.x + cos(rad) * len, mid.y + sin(rad) * len], radius: d(0.01...0.06)),
-                                spread: d(0.15...0.4),
-                                ramp: [RampStop(-1, c.with(alpha: 0.9)), RampStop(0, c.with(alpha: 0.6)), RampStop(1, c.with(alpha: 0))],
-                                blend: .screen, opacity: d(0.4...0.8), smoothing: 1))
-        }
-        var w = Wallpaper(background: background, layers: layers,
-                          effects: effects(vignette: d(0.15...0.35), warp: d(0.01...0.03), aberration: chance(0.6) ? d(0.8...2.5) : 0))
-        w.effects.grain.intensity = d(0.06...0.1)
-        return w
-    }
-
-    // MARK: Lava
-
-    mutating func rays() -> Wallpaper {
-        let deep = drift(p.deep), base = drift(p.base), accent = drift(p.accent), secondary = drift(p.secondary), highlight = drift(p.highlight)
-        let center: Vec2 = [0.5 + jit(0.2), d(0.55...0.95)]
-        let background = Background.radial([base.mixed(with: accent, 0.3), deep], center: center, radius: d(0.9...1.4), smoothing: 0.5)
-        let burst = Layer(name: "Rays",
-                          shape: .rays(center: center, count: rng.int(in: 10...28), rotation: d(0...360), width: d(0.35...0.6)),
-                          spread: d(0.02...0.06),
-                          ramp: [RampStop(-1, accent.with(alpha: d(0.25...0.5))), RampStop(0, accent.with(alpha: 0.2)), RampStop(1, accent.with(alpha: 0))],
-                          blend: .screen, opacity: d(0.6...1), smoothing: 1)
-        let fade = Layer(name: "Fade", shape: .circle(center: center, radius: 0.05), spread: d(0.6...1.0),
-                         ramp: [RampStop(0, deep.with(alpha: 0)), RampStop(1.3, deep.with(alpha: 0.9))])
-        let sun = Layer(name: "Sun", shape: .circle(center: center, radius: d(0.06...0.16)), spread: d(0.15...0.3),
-                        ramp: [RampStop(-1, highlight), RampStop(0, highlight.mixed(with: accent, 0.4)), RampStop(0.5, secondary.with(alpha: 0.6)), RampStop(1.3, accent.with(alpha: 0))],
-                        blend: .screen)
-        var w = Wallpaper(background: background, layers: [burst, fade, sun],
-                          effects: effects(vignette: d(0.1...0.3), warp: chance(0.4) ? d(0.005...0.02) : 0, aberration: chance(0.5) ? d(0.5...2) : 0))
-        w.effects.grain.intensity = d(0.05...0.09)
-        return w
-    }
-
-    // MARK: Mountains
-
-    mutating func mountains() -> Wallpaper {
-        let deep = drift(p.deep), base = drift(p.base), accent = drift(p.accent), secondary = drift(p.secondary), highlight = drift(p.highlight)
-        // Sky: light near the horizon, dark above.
-        let background = Background.linear([highlight.mixed(with: accent, 0.35), accent.mixed(with: base, 0.5), base, deep], angle: -90 + jit(10), smoothing: 0.4)
-        var layers: [Layer] = []
-        let ridges = rng.int(in: 4...6)
-        for i in 0..<ridges {
-            let t = Double(i) / Double(ridges - 1)          // 0 = far, 1 = near
-            let y = d(0.38...0.5) + t * d(0.35...0.45)
-            let colour = deep.mixed(with: base.mixed(with: accent, 0.4), (1 - t) * 0.85)   // far ridges lift into the haze
-            layers.append(Layer(name: "Ridge \(i + 1)",
-                                shape: .line(through: [0.5, y], angle: -90, bend: jit(0.15)),
-                                spread: d(0.01...0.03),
-                                ramp: [RampStop(-1, colour), RampStop(0, colour), RampStop(1, colour.with(alpha: 0))],
-                                smoothing: 1,
-                                distortion: Distortion(amount: d(0.06...0.14) * (0.5 + t * 0.7), scale: d(1.2...2.4), octaves: rng.int(in: 3...5))))
-        }
-        let sun = Layer(name: "Sun", shape: .circle(center: [d(0.25...0.75), d(0.25...0.42)], radius: d(0.04...0.1)), spread: d(0.2...0.4),
-                        ramp: [RampStop(-1, highlight), RampStop(0, highlight.mixed(with: accent, 0.3)), RampStop(1.2, accent.with(alpha: 0))],
-                        blend: .screen, opacity: d(0.5...0.9))
-        var w = Wallpaper(background: background, layers: [sun] + layers,
-                          effects: effects(vignette: d(0...0.2), warp: 0, aberration: 0))
-        w.effects.grain.intensity = d(0.04...0.08)
-        w.effects.grain.chroma = 0.1
-        return w
-    }
-
-    // MARK: Dunes
-
-    mutating func dunes() -> Wallpaper {
-        let deep = drift(p.deep), base = drift(p.base), baseAlt = drift(p.baseAlt), accent = drift(p.accent), highlight = drift(p.highlight)
-        let background = Background.linear([highlight, baseAlt], angle: 90, smoothing: 0.5)
-        var layers: [Layer] = []
-        let count = rng.int(in: 3...5)
-        for i in 0..<count {
-            let t = Double(i) / Double(max(count - 1, 1))
-            let y = d(0.45...0.55) + t * d(0.3...0.4)
-            let lit = accent.mixed(with: highlight, 0.35 * (1 - t))
-            let shade = accent.mixed(with: deep, 0.25 + t * 0.35)
-            layers.append(Layer(name: "Dune \(i + 1)",
-                                shape: .wave(through: [0.5, y], angle: -90, amplitude: d(0.04...0.1), wavelength: d(0.8...1.8), phase: d(0...360)),
-                                spread: d(0.12...0.25),
-                                ramp: [RampStop(-1.5, shade), RampStop(-0.3, lit), RampStop(0, lit.adjusted(lightness: 0.05)), RampStop(0.02, lit.with(alpha: 0))],
-                                smoothing: 0.8,
-                                distortion: Distortion(amount: d(0.01...0.03), scale: d(1...2), octaves: 2)))
-        }
-        var w = Wallpaper(background: background, layers: layers, effects: effects(vignette: 0, warp: 0, aberration: 0))
-        w.effects.grain.intensity = d(0.05...0.09)
-        return w
-    }
-
-    // MARK: Sunset
-
-    mutating func sunset() -> Wallpaper {
-        let deep = drift(p.deep), base = drift(p.base), accent = drift(p.accent), secondary = drift(p.secondary), highlight = drift(p.highlight)
-        let horizon = d(0.6...0.75)
-        let background = Background.linear(stops: [RampStop(0, deep), RampStop(0.45, secondary.mixed(with: deep, 0.4)), RampStop(horizon, accent), RampStop(1, deep)],
-                                           angle: 90, smoothing: 0.3)
-        let sunR = d(0.2...0.32)
-        let sunC: Vec2 = [0.5 + jit(0.1), horizon + jit(0.03)]
-        let sun = Layer(name: "Sun", shape: .circle(center: sunC, radius: sunR), spread: d(0.01...0.03),
-                        ramp: [RampStop(-1, highlight.mixed(with: accent, 0.3)), RampStop(0, accent.adjusted(lightness: 0.1)), RampStop(1, accent.with(alpha: 0))],
-                        smoothing: 1)
-        // Horizontal slats in the sky colour, clipped to the sun's lower half.
-        let slats = Layer(name: "Slats",
-                          shape: .stripes(through: [0.5, horizon + sunR * 0.1], angle: 90, period: d(0.04...0.07), width: d(0.012...0.03), bend: 0),
-                          spread: 0.004,
-                          ramp: [RampStop(-1, deep), RampStop(0, deep), RampStop(1, deep.with(alpha: 0))],
-                          opacity: 1, smoothing: 1,
-                          clip: .rect(center: [sunC.x, sunC.y + sunR * 0.6], size: [sunR * 2.4, sunR * 1.2], feather: sunR * 0.3))
-        let ground = Layer(name: "Ground", shape: .line(through: [0.5, horizon + sunR * 0.75], angle: -90, bend: 0), spread: 0.01,
-                           ramp: [RampStop(-1, deep), RampStop(0, deep), RampStop(1, deep.with(alpha: 0))])
-        let glow = Layer(name: "Glow", shape: .circle(center: sunC, radius: sunR), spread: d(0.3...0.5),
-                         ramp: [RampStop(0, accent.with(alpha: 0.5)), RampStop(1.2, accent.with(alpha: 0))], blend: .screen, opacity: 0.8)
-        var w = Wallpaper(background: background, layers: [glow, sun, slats, ground],
-                          effects: effects(vignette: d(0.1...0.3), warp: 0, aberration: chance(0.5) ? d(0.8...2) : 0))
-        w.effects.grain.intensity = d(0.05...0.09)
-        return w
-    }
-
-    // MARK: Saturn
 
 }

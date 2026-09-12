@@ -209,6 +209,59 @@ public struct Background: Codable, Sendable, Equatable {
                    angle: angle, center: center, smoothing: smoothing)
     }
 
+    /// The same background as another kind, carrying the colours across.
+    ///
+    /// `.points` keeps its colours in `points` and everything else keeps
+    /// them in `stops`, so a bare `kind = .points` leaves the new field
+    /// empty and the picture loses every colour it had. Changing kind
+    /// should never do that, so go through here.
+    public func converted(to kind: Kind) -> Background {
+        guard kind != self.kind else { return self }
+        var out = self
+        out.kind = kind
+
+        // Whatever this background's colours are, in order.
+        let colours: [RGBA] = self.kind == .points
+            ? points.map(\.color)
+            : stops.sorted { $0.position < $1.position }.map(\.color)
+        guard !colours.isEmpty else { return out }
+
+        // The rule throughout: never DESTROY colour information a kind
+        // happens not to read. `.solid` renders only the first stop and
+        // `.mesh` reads the stops in array order ignoring their positions —
+        // so both can leave `stops` exactly as they found it, and switching
+        // away and back returns the gradient you had.
+        switch kind {
+        case .points:
+            if out.points.isEmpty {
+                out.points = Background.points(colours).points
+            }
+        case .solid:
+            // Keep every stop; the renderer takes the first one.
+            if out.stops.isEmpty { out.stops = [RampStop(0, colours[0])] }
+        case .mesh:
+            if out.stops.isEmpty { out.stops = colours.map { RampStop(0, $0) } }
+            let n = colours.count
+            out.meshColumns = max(1, Int(Double(n).squareRoot().rounded()))
+            out.meshRows = max(1, (n + out.meshColumns - 1) / out.meshColumns)
+        case .linear, .radial, .conic:
+            // Coming BACK from a point field, the ramp this background had
+            // is still sitting in `stops` untouched — restore it rather
+            // than evenly respacing, so linear → points → linear returns
+            // you to where you started instead of quietly flattening the
+            // stop positions you had set.
+            let kept = stops.sorted { $0.position < $1.position }
+            // Coming back from a kind that did not use positions, the ramp
+            // is still sitting in `stops` untouched — restore it rather than
+            // evenly respacing, so a round trip returns you to where you
+            // started instead of quietly flattening the stops you set.
+            out.stops = kept.count == colours.count
+                ? kept
+                : RampStop.spread(colours, from: 0, to: 1)
+        }
+        return out
+    }
+
     /// Colour points blended by inverse distance.
     public static func points(_ points: [MeshPoint], mixing: Double = 1, swirl: Double = 0) -> Background {
         Background(kind: .points, stops: [], points: points, mixing: mixing, swirl: swirl)

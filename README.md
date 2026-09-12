@@ -67,7 +67,9 @@ maps); flowing ribbons; holographic hue sweeps; light leaks and sunbursts;
 hazy ridges and dunes; colour ladders and retro diagonal stripes (stepped
 ramps). A liquify brush (`Effects.smears`) pushes, swirls, pinches or
 bloats the picture like wet paint, and because the scene is analytic the
-strokes export at any size.
+strokes export at any size. `Smear.randomStrokes` generates them as
+PATHS rather than scattered pokes — consecutive smears overlap and the
+push follows the tangent — so a generated swish reads like a drawn one.
 
 ## What's in the box
 
@@ -107,16 +109,17 @@ strokes export at any size.
 - **Palettes** — six roles (`base`, `baseAlt`, `accent`, `secondary`,
   `highlight`, `deep`) every recipe is written against; twelve curated
   palettes lifted from reference wallpapers, seven built from traditional
-  Japanese colour names (`Palette.japanese`), and thirteen neon-on-dark
-  sets (`Palette.vivid`) built from a ground and two hues with the other
-  roles derived in OKLab; seventeen five-stop `GradientPreset.spectra`
-  ramps that run pale → saturated → deep; OKLCH generation from a seed
+  Japanese colour names (`Palette.japanese`), thirteen neon-on-dark sets
+  (`Palette.vivid`) built from a ground and two hues with the other roles
+  derived in OKLab, and seventeen five-colour `Palette.spectra` sets
+  running pale → saturated → deep; OKLCH generation from a seed
   with split-complement / analogous-clash / triad harmonies.
-- **Generator** — 28 motifs in five families (soft, fields, surfaces,
-  scenes, flat), each a seeded recipe — from `eclipse` and `horizon`
-  through `flow`, `smesh`, `silk`, `angular`, `aurora`, `holo`, `nebula`,
-  `beehive`, `orbs`, `bokeh`, `mountains`, `dunes` and `sunset` to `ladder`
-  and `retro`. `Wallpaper.recolored(to:)`
+- **Generator** — 19 motifs in four families (soft, fields, scenes, flat),
+  each a seeded recipe — from `eclipse` and `horizon` through `flow`,
+  `smesh`, `silk`, `angular`, `aurora`, `holo`, `nebula` and `mountains`
+  to `ladder`. Judged by eye on rendered sheets and culled twice: what
+  survives is fields and single big soft forms, because a texture makes a
+  poor wallpaper. `Wallpaper.recolored(to:)`
   re-dresses any scene in another palette without regenerating it. Every position, radius,
   spread, ramp and effect is jittered from the seed, so a motif is a family
   and a seed picks one member. `SeededRandom` is SplitMix64 with its own
