@@ -313,18 +313,18 @@ struct StoreTests {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("gk-store-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         var store = PaletteStore.standard(directory: dir)
-        #expect(store.all.count == Palette.curated.count && store.custom.isEmpty)
+        #expect(store.all.count == Palette.builtIn.count && store.custom.isEmpty)
 
         var mine = Palette.generate(mood: .light, seed: 3)
         mine.name = "Mine"
         try store.save(mine)
         #expect(store.item(named: "mine") == mine)
-        #expect(store.isCustom(mine) && store.all.count == Palette.curated.count + 1)
+        #expect(store.isCustom(mine) && store.all.count == Palette.builtIn.count + 1)
 
         // Same name as a default → overrides it, count unchanged.
         var override = Palette.iris; override.accent = .black
         try store.save(override)
-        #expect(store.all.count == Palette.curated.count + 1)
+        #expect(store.all.count == Palette.builtIn.count + 1)
         #expect(store.item(named: "Iris")?.accent == .black)
 
         // A fresh store sees the files; a broken file is reported, not fatal.
@@ -547,6 +547,12 @@ struct ReadoutTests {
         }
         #expect(Palette.named("Sakura") != nil, "japanese palettes must resolve by name")
         #expect(Palette.named("Iris") != nil, "curated palettes must still resolve")
+        // The default store must serve every family, not just `curated` —
+        // that omission hid the Japanese and vivid sets from the studio.
+        let store = PaletteStore.standard(directory: nil)
+        for family in [Palette.curated, Palette.japanese, Palette.vivid] {
+            for p in family { #expect(store.item(named: p.name) != nil, "\(p.name) missing from the default store") }
+        }
         #expect(Palette.builtIn.count == Palette.curated.count + Palette.japanese.count + Palette.vivid.count)
         // Names must be unique across the whole built-in set, or `named()`
         // silently resolves to whichever family happens to come first.

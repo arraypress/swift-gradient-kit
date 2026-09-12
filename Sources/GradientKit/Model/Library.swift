@@ -216,7 +216,11 @@ public typealias GradientStore = PresetStore<GradientPreset>
 
 public extension PaletteStore {
     /// Curated palettes plus `directory`.
-    static func standard(directory: URL?) -> PaletteStore { PaletteStore(defaults: Palette.curated, directory: directory) }
+    /// Every built-in palette — curated, Japanese and vivid — plus a
+    /// folder of the user's own. `curated` alone was the default here for
+    /// a while, which silently hid the other two families from anything
+    /// using this (the studio app did not show them at all).
+    static func standard(directory: URL?) -> PaletteStore { PaletteStore(defaults: Palette.builtIn, directory: directory) }
 }
 
 public extension GradientStore {
