@@ -262,8 +262,23 @@ public struct GPUScene {
         g.warp = SIMD4<Float>(Float(e.warp.amount), Float(e.warp.scale), Float(max(1, min(e.warp.octaves, 6))), 0)
         // Grain size is specified at a 1440-high reference so the texture
         // looks the same in a preview and a 5K export.
-        let grainPx = max(1, Float(e.grain.size) * Float(height) / 1440)
-        g.grain = SIMD4<Float>(Float(e.grain.intensity), grainPx, Float(e.grain.chroma), Float(e.grain.shadowBias))
+        //
+        // Below that reference the cell would want to be less than a pixel,
+        // and it cannot be — so it clamps to 1 and the grain ends up
+        // covering far more of the picture than it should. MEASURED on a
+        // 315-high thumbnail: the cell is 3x too large relative to the
+        // frame and high-frequency energy is ~6x that of the same scene
+        // rendered large and shrunk. That is why small previews and gallery
+        // thumbnails read as dirty while the wallpaper itself is clean.
+        //
+        // The size we cannot have is traded for amplitude we can: scaling
+        // intensity by the shortfall keeps grain energy per unit of PICTURE
+        // constant, which is what makes a thumbnail look like the real
+        // thing shrunk.
+        let idealGrain = Float(e.grain.size) * Float(height) / 1440
+        let grainPx = max(1, idealGrain)
+        let grainIntensity = Float(e.grain.intensity) * min(1, idealGrain / grainPx)
+        g.grain = SIMD4<Float>(grainIntensity, grainPx, Float(e.grain.chroma), Float(e.grain.shadowBias))
         g.vignette = SIMD4<Float>(Float(e.vignette.intensity), Float(e.vignette.radius), Float(e.vignette.softness), 0)
         g.tone = SIMD4<Float>(Float(e.tone.exposure), Float(e.tone.contrast), Float(e.tone.saturation), rad(e.tone.hueShift))
         // Aberration is specified in pixels at the corner; scale with resolution
