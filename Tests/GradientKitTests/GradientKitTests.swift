@@ -547,7 +547,40 @@ struct ReadoutTests {
         }
         #expect(Palette.named("Sakura") != nil, "japanese palettes must resolve by name")
         #expect(Palette.named("Iris") != nil, "curated palettes must still resolve")
-        #expect(Palette.builtIn.count == Palette.curated.count + Palette.japanese.count)
+        #expect(Palette.builtIn.count == Palette.curated.count + Palette.japanese.count + Palette.vivid.count)
+        // Names must be unique across the whole built-in set, or `named()`
+        // silently resolves to whichever family happens to come first.
+        #expect(Set(Palette.builtIn.map(\.name)).count == Palette.builtIn.count)
+    }
+
+    @Test("Vivid palettes: dark grounds, two distinct hues, all in gamut")
+    func vivid() {
+        #expect(Palette.vivid.count == 13)
+        for p in Palette.vivid {
+            #expect(p.mood == .dark, "\(p.name)")
+            #expect(p.deep.luminance < 0.08, "\(p.name) ground is not dark")
+            #expect(p.highlight.luminance > p.accent.luminance, "\(p.name) highlight must out-light the accent")
+            // The two hues are the point: they must actually differ.
+            let (_, _, ha) = p.accent.oklch
+            let (_, _, hs) = p.secondary.oklch
+            let apart = min(abs(ha - hs), 360 - abs(ha - hs))
+            #expect(apart > 20, "\(p.name) hues are only \(Int(apart))° apart")
+            for c in p.colors { #expect(c.linear.isInGamut, "\(p.name) out of gamut") }
+            #expect(Set(p.colors.map(\.hexString)).count == 6, "\(p.name) has duplicate roles")
+        }
+    }
+
+    @Test("Spectra ramps run light to dark and are named uniquely") 
+    func spectra() {
+        #expect(GradientPreset.spectra.count == 17)
+        #expect(Set(GradientPreset.defaults.map(\.name)).count == GradientPreset.defaults.count)
+        for g in GradientPreset.spectra {
+            #expect(g.stops.count == 5, "\(g.name)")
+            // "Layered Dark" deliberately starts dark; the rest start pale.
+            if g.name != "Layered Dark" {
+                #expect(g.stops.first!.color.luminance > g.stops.last!.color.luminance, "\(g.name)")
+            }
+        }
     }
 
     @Test("Social and device sizes are sane")

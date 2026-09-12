@@ -97,7 +97,7 @@ public struct Palette: Codable, Sendable, Equatable, Hashable, Identifiable {
 
     /// Everything built in: the curated sets plus the traditional Japanese
     /// ones. `curated` stays as it was so existing pickers do not reshuffle.
-    public static var builtIn: [Palette] { curated + japanese }
+    public static var builtIn: [Palette] { curated + japanese + vivid }
 
     public static func named(_ name: String) -> Palette? {
         builtIn.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }

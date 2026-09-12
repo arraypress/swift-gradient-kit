@@ -71,6 +71,33 @@ public struct GradientPreset: Codable, Sendable, Equatable, Identifiable {
         GradientPreset(name: "Prism Sweep", colors: [hex("#FF9A1F"), hex("#FF3E6C"), hex("#B03BEE"), hex("#2D8BFF"), hex("#14C7B5"), hex("#0E5F3A")], angle: 20),
         GradientPreset(name: "Dusk Sweep", colors: [hex("#FF7A18"), hex("#C63A5B"), hex("#3B1C5C"), hex("#0B0A1A")], angle: 120),
         GradientPreset(name: "Slate Sweep", colors: [hex("#9CA3AF"), hex("#4B5563"), hex("#111827")], angle: 135),
+    ] + spectra
+
+    /// Five-stop ramps that run pale → warm → saturated → deep. The shape
+    /// is the point: a near-white first stop keeps the light end from
+    /// going grey, and the long run to a dark last stop is what stops a
+    /// five-colour gradient reading as a rainbow.
+    ///
+    /// PROVENANCE: colour relationships taken by eye from the reference
+    /// ramps on feralui.dev. Values are data; the names here are ours.
+    static let spectra: [GradientPreset] = [
+        GradientPreset(name: "Citrus Rise", colors: [hex("#FFFDF7"), hex("#FFE27A"), hex("#FF9A4A"), hex("#FF4F63"), hex("#8C3DEB")]),
+        GradientPreset(name: "Meadow Signal", colors: [hex("#FFFEFB"), hex("#E9FF95"), hex("#59E39C"), hex("#1EC9D8"), hex("#2874F0")]),
+        GradientPreset(name: "Apricot Violet", colors: [hex("#FFF9F4"), hex("#FFD99A"), hex("#FF8E62"), hex("#F44D8A"), hex("#7C45D9")]),
+        GradientPreset(name: "Lotus", colors: [hex("#FCFFF6"), hex("#DDF174"), hex("#64D890"), hex("#2FBAC7"), hex("#245A9D")]),
+        GradientPreset(name: "Daylight Blue", colors: [hex("#FAFBFF"), hex("#BDE6FF"), hex("#5AB8F4"), hex("#6269E8"), hex("#CE72D8")]),
+        GradientPreset(name: "Sequence", colors: [hex("#FFF8EE"), hex("#FFE08A"), hex("#FF9F55"), hex("#ED5D73"), hex("#6D315F")]),
+        GradientPreset(name: "Wisteria", colors: [hex("#FCF9FF"), hex("#E9C7FF"), hex("#B875E8"), hex("#665ED2"), hex("#263A82")]),
+        GradientPreset(name: "Layered", colors: [hex("#FFFDF7"), hex("#FFD466"), hex("#FF647D"), hex("#9A6BFF"), hex("#46E1C3")]),
+        GradientPreset(name: "Layered Dark", colors: [hex("#15131B"), hex("#FFD466"), hex("#FF647D"), hex("#9A6BFF"), hex("#46E1C3")]),
+        GradientPreset(name: "Field Green", colors: [hex("#F3FBF2"), hex("#9EE89A"), hex("#3FBF63"), hex("#007A33"), hex("#044D22")]),
+        GradientPreset(name: "Warm Clay", colors: [hex("#FBF0DC"), hex("#FFEBB0"), hex("#FFC855"), hex("#F28A30"), hex("#D9503B")]),
+        GradientPreset(name: "Rosewater", colors: [hex("#FBEEF1"), hex("#FFD6C2"), hex("#F79C97"), hex("#E1679A"), hex("#7E3D9A")]),
+        GradientPreset(name: "Coral Plum", colors: [hex("#FFF6F1"), hex("#FFDBC0"), hex("#FF9E7E"), hex("#EE5A82"), hex("#873DBC")]),
+        GradientPreset(name: "Acid Spring", colors: [hex("#F8FFE8"), hex("#E8FF45"), hex("#67F08D"), hex("#14C7B8"), hex("#1945B8")]),
+        GradientPreset(name: "Marmalade", colors: [hex("#FFF7ED"), hex("#FFC061"), hex("#FF714B"), hex("#C62E65"), hex("#4B225E")]),
+        GradientPreset(name: "Glacier", colors: [hex("#F7FCFF"), hex("#D8F5FF"), hex("#7DD7F4"), hex("#6394E8"), hex("#8B62D6")]),
+        GradientPreset(name: "Newsprint", colors: [hex("#F7F5F0"), hex("#D9D6CF"), hex("#A8A49D"), hex("#625F5B"), hex("#211F1D")]),
     ]
 }
 

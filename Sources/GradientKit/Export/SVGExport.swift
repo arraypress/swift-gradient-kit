@@ -60,7 +60,13 @@ public enum SVGExport {
         let height: Double
         var defs = ""
         var notes: [String] = []
-        private var nextID = 0
+        // NOT `private`. The struct is already private to this file, so the
+        // keyword adds no protection here — but a private stored property
+        // makes the SYNTHESISED memberwise initialiser private too, and then
+        // `Context(width:height:)` a few lines up does not compile. Swift 6.4
+        // lets it through; the Swift on macos-26 CI does not, so this built on
+        // a beta toolchain and failed for everyone else.
+        var nextID = 0
 
         var minSide: Double { min(width, height) }
 
